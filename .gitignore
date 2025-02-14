@@ -172,3 +172,7 @@ cython_debug/
 
 # Models directory
 pretrained_models/
+
+# Asset directory
+logs/
+tmp/

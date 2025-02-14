@@ -1,18 +1,44 @@
-# CosyVoice Ray Serve API
+# CosyVoice: High-Performance Text-to-Speech Service
 
-A high-performance Text-to-Speech (TTS) service built with Ray Serve, supporting multiple synthesis modes including standard TTS, voice cloning, and cross-lingual synthesis.
+CosyVoice is a high-performance Text-to-Speech (TTS) service built using Ray Serve. It provides a RESTful API for various TTS tasks, including standard text-to-speech, cross-lingual voice cloning, and same-language voice cloning. The service is designed for high availability, efficient resource utilization, and automatic GPU acceleration when available.
+
+Key capabilities:
+- High-quality speech synthesis with multiple voice types
+- Cross-lingual voice cloning with accent preservation
+- Same-language voice cloning for precise voice matching
+- Automatic GPU acceleration with CPU fallback
+- Efficient resource management and cleanup
+- Health monitoring and graceful shutdown
 
 ## Features
 
 - Standard text-to-speech synthesis
 - Cross-lingual voice cloning
 - Same-language voice cloning
-- Support for multiple languages (Chinese, English, Japanese, Korean)
+- Support for multiple languages (Chinese, English, Japanese, Cantonese, Korean)
 - Multiple voice types (male/female)
 - Adjustable speech speed
 - RESTful API interface
 
-## Prerequisites
+## Table of Contents
+- [Features](#features)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+- [Usage](#usage)
+  - [Starting the Server](#starting-the-server)
+  - [API Endpoints](#api-endpoints)
+- [Configuration](#configuration)
+- [Environment Variables](#environment-variables)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+## Getting Started
+
+### Prerequisites
 
 - Python 3.11 (recommended)
 - FFmpeg
@@ -59,17 +85,50 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --tru
 
 ### Starting the Server
 
+1. Start the Ray cluster:
 ```bash
-python cosyvoice/api.py
+ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --port=6379 --temp-dir=/data/ray
 ```
 
-The server will start on `http://localhost:9233`
+2. Set the Ray address and start the service:
+```bash
+export RAY_ADDRESS="ray://localhost:6379"
+ray serve run --address=$RAY_ADDRESS --namespace=cosyvoice cosyvoice.api:deployment
+```
+
+The server will be accessible at `http://localhost:9998`.
+
+Note: Always use the --namespace option to avoid affecting other Ray Serve applications.
 
 ### API Endpoints
 
-#### 1. Standard TTS
+#### 1. Standard TTS (`/v1/model/cosyvoice/tts`)
+
+Synthesizes speech from text using a specified voice type.
+
+**Method:** `POST`
+
+**Request Body:**
+```json
+{
+    "text": "Text to synthesize",        // Required: Text to convert to speech
+    "voice_type": "qwen",               // Optional: Voice type to use (default: "qwen")
+    "speed": 1.0                        // Optional: Speech speed multiplier (default: 1.0)
+}
+```
+
+**Response:**
+- Content-Type: `audio/x-wav`
+- Body: WAV audio file (24kHz sample rate)
+
+**Error Responses:**
+- 400: Invalid request parameters
+- 404: Voice type not found
+- 500: Internal server error
+
+**Example:**
 ```bash
-curl -X POST http://localhost:9233/v1/model/cosyvoice/tts \
+curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
     -H "Content-Type: application/json" \
     -d '{
         "text": "Hello world",
@@ -80,9 +139,34 @@ curl -X POST http://localhost:9233/v1/model/cosyvoice/tts \
     --output output.wav
 ```
 
-#### 2. Cross-lingual Voice Cloning
+**Response:** The API returns a WAV file containing the synthesized speech.
+
+#### 2. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/clone`)
+
+Clones a voice from a reference audio file and uses it to speak text in any supported language.
+
+**Method:** `POST`
+
+**Request Body:**
+```json
+{
+    "text": "Text to synthesize",             // Required: Text to speak in target language
+    "reference_audio": "path/to/audio.wav",   // Required: Reference voice audio file
+    "speed": 1.0                             // Optional: Speech speed multiplier (default: 1.0)
+}
+```
+
+**Response:**
+- Content-Type: `audio/x-wav`
+- Body: WAV audio file (24kHz sample rate)
+
+**Error Responses:**
+- 400: Missing required parameters or invalid audio file
+- 500: Audio processing or synthesis error
+
+**Example:**
 ```bash
-curl -X POST http://localhost:9233/v1/model/cosyvoice/clone \
+curl -X POST http://localhost:9998/v1/model/cosyvoice/clone \
     -H "Content-Type: application/json" \
     -d '{
         "text": "你好，世界",
@@ -92,9 +176,39 @@ curl -X POST http://localhost:9233/v1/model/cosyvoice/clone \
     --output output.wav
 ```
 
-#### 3. Same-language Voice Cloning
+**Response:** The API returns a WAV file containing the synthesized speech with the cloned voice.
+
+#### 3. Same-language Voice Cloning (`/v1/model/cosyvoice/clone_eq`)
+
+Performs high-accuracy voice cloning when the reference audio's text content is known.
+
+**Method:** `POST`
+
+**Request Body:**
+```json
+{
+    "text": "Text to synthesize",              // Required: Text to speak
+    "reference_audio": "path/to/audio.wav",    // Required: Reference voice audio file
+    "reference_text": "Reference text",        // Required: Text content of reference audio
+    "speed": 1.0                              // Optional: Speech speed multiplier (default: 1.0)
+}
+```
+
+**Response:**
+- Content-Type: `audio/x-wav`
+- Body: WAV audio file (24kHz sample rate)
+
+**Error Responses:**
+- 400: Missing required parameters or invalid audio file
+- 500: Audio processing or synthesis error
+
+**Note:** This endpoint provides higher quality voice cloning when the reference
+audio's text content is known, as it can better learn the voice characteristics
+by aligning the text with the audio.
+
+**Example:**
 ```bash
-curl -X POST http://localhost:9233/v1/model/cosyvoice/clone_eq \
+curl -X POST http://localhost:9998/v1/model/cosyvoice/clone_eq \
     -H "Content-Type: application/json" \
     -d '{
         "text": "Hello world",
@@ -105,54 +219,63 @@ curl -X POST http://localhost:9233/v1/model/cosyvoice/clone_eq \
     --output output.wav
 ```
 
+**Response:** The API returns a WAV file containing the synthesized speech.
+
 ## Configuration
 
-- Default port: 9233
-- Supported voice types:
-  - Chinese Female/Male
-  - English Female/Male
-  - Japanese Male
-  - Cantonese Female
-  - Korean Female
+### Environment Variables
 
-## Environment Variables
+- `RAY_ADDRESS`: The address of the Ray cluster (e.g., "ray://localhost:6379")
+- `CUDA_VISIBLE_DEVICES`: GPU devices to use (e.g., "0,1" or "" for CPU-only)
+- `PYTORCH_CUDA_ALLOC_CONF`: PyTorch CUDA memory allocation settings
 
-- `RAY_ADDRESS`: Ray cluster address (optional)
-- `PYTHONPATH`: Automatically configured by the application
-- `CUDA_VISIBLE_DEVICES`: GPU device selection (optional)
-
-## Project Structure
+### Project Structure
 
 ```
 cosyvoice-ray-serve-api/
 ├── cosyvoice/
-│   ├── api.py        # Main API implementation
-│   └── utils/        # Utility functions
-├── logs/             # Log files
-├── tmp/              # Temporary files
-├── requirements.txt  # Python dependencies
-└── pretrained_models/ # Downloaded model files
+│   ├── api.py          # Main API implementation
+│   └── webui.py        # Web interface (optional)
+├── asset/              # Voice prompt files
+├── logs/               # Log files
+├── tmp/                # Temporary files
+└── pretrained_models/  # Downloaded model files
 ```
 
 ## Troubleshooting
 
-Common issues and solutions:
+### Common Issues
 
-1. Sox compatibility issues:
-   - Ensure Sox and its development packages are properly installed
-   - Check system audio configurations
+1. **GPU Memory Issues**
+   - Symptom: Out of memory errors
+   - Solution: Adjust batch size or use CPU mode
 
-2. CUDA/GPU issues:
-   - Verify CUDA installation with `nvidia-smi`
-   - Check PyTorch CUDA compatibility
+2. **Ray Connection Issues**
+   - Symptom: Cannot connect to Ray cluster
+   - Solution: Ensure Ray is running and RAY_ADDRESS is correct
 
-3. Model download issues:
-   - Check network connectivity to ModelScope
-   - Ensure sufficient disk space for models
+3. **Audio Processing Errors**
+   - Symptom: FFmpeg or Sox related errors
+   - Solution: Verify system dependencies are installed
+
+### Logs
+
+Check the following log files for troubleshooting:
+- Application logs: `logs/YYYYMMDD.log`
+- Ray dashboard: `http://localhost:8265`
+
+## Contributing
+
+We welcome contributions to CosyVoice! If you'd like to contribute, please follow these guidelines:
+
+1. Fork the repository
+2. Create a new branch for your feature or bug fix
+3. Make your changes and ensure they are well-documented and tested
+4. Submit a pull request with a clear description of your changes
 
 ## License
 
-This project is licensed under the Apache 2.0 License. For more details, please refer to the [ LICENSE ](LICENSE) file.
+This project is licensed under the Apache 2.0 License. For more details, please refer to the [LICENSE](LICENSE) file.
 
 ## Acknowledgments
 
