@@ -92,13 +92,11 @@ ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --port=6379 --te
 
 2. Set the Ray address and start the service:
 ```bash
-export RAY_ADDRESS="ray://localhost:6379"
-ray serve run --address=$RAY_ADDRESS --namespace=cosyvoice cosyvoice.api:deployment
+python cosyvoice/api.py
 ```
 
 The server will be accessible at `http://localhost:9998`.
 
-Note: Always use the --namespace option to avoid affecting other Ray Serve applications.
 
 ### API Endpoints
 
@@ -122,7 +120,7 @@ Synthesizes speech from text using a specified voice type.
 - Body: WAV audio file (24kHz sample rate)
 
 **Error Responses:**
-- 400: Invalid request parameters
+- 400: Invalid request parameters or missing required parameter: text.
 - 404: Voice type not found
 - 500: Internal server error
 
@@ -132,8 +130,7 @@ curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
     -H "Content-Type: application/json" \
     -d '{
         "text": "Hello world",
-        "speaker": "default",
-        "language": "en",
+        "voice_type": "qwen",
         "speed": 1.0
     }' \
     --output output.wav
@@ -141,7 +138,42 @@ curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
 
 **Response:** The API returns a WAV file containing the synthesized speech.
 
-#### 2. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/clone`)
+#### 2. Zero-shot Voice Cloning (`/v1/model/cosyvoice/zero_shot`)
+Clones a voice from a reference audio file and uses it to speak text, given the reference audio and the reference text.
+
+**Method:** `POST`
+
+**Request Body:**
+```json
+{
+    "text": "Text to synthesize",             // Required: Text to speak
+    "reference_audio": "path/to/audio.wav",   // Required: Reference voice audio file
+    "reference_text": "Reference text",        // Required: Text content of reference audio
+    "speed": 1.0                             // Optional: Speech speed multiplier (default: 1.0)
+}
+```
+
+**Response:**
+- Content-Type: `audio/x-wav`
+- Body: WAV audio file (24kHz sample rate)
+
+**Error Responses:**
+- 400: Missing required parameters or invalid audio file
+- 500: Audio processing or synthesis error
+
+**Example:**
+```bash
+curl -X POST http://localhost:9998/v1/model/cosyvoice/zero_shot \
+    -H "Content-Type: application/json" \
+    -d '{
+        "text": "你好，世界",
+        "reference_audio": "path/to/reference.wav",
+        "reference_text": "Reference text",
+        "speed": 1.0
+    }' \
+    --output output.wav
+```
+#### 3. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/cross_lingual`)
 
 Clones a voice from a reference audio file and uses it to speak text in any supported language.
 
@@ -166,7 +198,7 @@ Clones a voice from a reference audio file and uses it to speak text in any supp
 
 **Example:**
 ```bash
-curl -X POST http://localhost:9998/v1/model/cosyvoice/clone \
+curl -X POST http://localhost:9998/v1/model/cosyvoice/cross_lingual \
     -H "Content-Type: application/json" \
     -d '{
         "text": "你好，世界",
@@ -178,19 +210,18 @@ curl -X POST http://localhost:9998/v1/model/cosyvoice/clone \
 
 **Response:** The API returns a WAV file containing the synthesized speech with the cloned voice.
 
-#### 3. Same-language Voice Cloning (`/v1/model/cosyvoice/clone_eq`)
-
-Performs high-accuracy voice cloning when the reference audio's text content is known.
+#### 4. Instruction-based TTS (`/v1/model/cosyvoice/instruct`)
+Synthesizes speech from text with specific instructions on voice style.
 
 **Method:** `POST`
 
 **Request Body:**
 ```json
 {
-    "text": "Text to synthesize",              // Required: Text to speak
-    "reference_audio": "path/to/audio.wav",    // Required: Reference voice audio file
-    "reference_text": "Reference text",        // Required: Text content of reference audio
-    "speed": 1.0                              // Optional: Speech speed multiplier (default: 1.0)
+"text": "Text to synthesize", // Required: Text to speak
+"instruction": "Instruction", // Required: Instruction for voice style
+"voice_type": "qwen", // Optional: Voice type (default: "qwen")
+"speed": 1.0 // Optional: Speech speed multiplier (default: 1.0)
 }
 ```
 
@@ -199,33 +230,26 @@ Performs high-accuracy voice cloning when the reference audio's text content is 
 - Body: WAV audio file (24kHz sample rate)
 
 **Error Responses:**
-- 400: Missing required parameters or invalid audio file
+- 400: Missing required parameters
 - 500: Audio processing or synthesis error
-
-**Note:** This endpoint provides higher quality voice cloning when the reference
-audio's text content is known, as it can better learn the voice characteristics
-by aligning the text with the audio.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:9998/v1/model/cosyvoice/clone_eq \
-    -H "Content-Type: application/json" \
-    -d '{
-        "text": "Hello world",
-        "reference_audio": "path/to/reference.wav",
-        "reference_text": "Reference text",
-        "speed": 1.0
-    }' \
-    --output output.wav
+curl -X POST http://localhost:9998/v1/model/cosyvoice/instruct \
+-H "Content-Type: application/json" \
+-d '{
+"text": "Hello world",
+"instruction": "Speak with a happy tone",
+"voice_type": "qwen",
+"speed": 1.0
+}' \
+--output output.wav
 ```
-
-**Response:** The API returns a WAV file containing the synthesized speech.
 
 ## Configuration
 
 ### Environment Variables
 
-- `RAY_ADDRESS`: The address of the Ray cluster (e.g., "ray://localhost:6379")
 - `CUDA_VISIBLE_DEVICES`: GPU devices to use (e.g., "0,1" or "" for CPU-only)
 - `PYTORCH_CUDA_ALLOC_CONF`: PyTorch CUDA memory allocation settings
 
