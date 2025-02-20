@@ -1,11 +1,37 @@
 """CosyVoice2 Text-to-Speech Service API.
 
-This module provides a Ray Serve based HTTP API for text-to-speech synthesis
-using CosyVoice2 model. It supports:
-1. Zero-shot voice cloning
-2. Cross-lingual synthesis
-3. Instruction-based synthesis
-4. Fine-grained control (emotions, prosody)
+This module implements a high-performance Ray Serve based HTTP API for text-to-speech synthesis
+using the CosyVoice2 model. The service provides multiple synthesis modes and features:
+
+Key Features:
+    - Standard text-to-speech with predefined voices
+    - Zero-shot voice cloning from reference audio
+    - Cross-lingual synthesis preserving speaker characteristics
+    - Instruction-based synthesis for fine-grained control
+    - Streaming audio output support
+    - Automatic GPU acceleration with CPU fallback
+    - Resource management and cleanup
+    - Health monitoring
+
+Endpoints:
+    - /v1/model/cosyvoice/tts: Standard TTS synthesis
+    - /v1/model/cosyvoice/zero_shot: Zero-shot voice cloning
+    - /v1/model/cosyvoice/cross_lingual: Cross-lingual synthesis
+    - /v1/model/cosyvoice/instruct: Instruction-based synthesis
+
+Technical Details:
+    - Uses Ray Serve for deployment and scaling
+    - Supports both CPU and GPU execution
+    - Implements caching for reference audio processing
+    - Provides automatic resource cleanup
+    - Handles CORS and streaming responses
+    - Includes comprehensive logging and error handling
+
+Dependencies:
+    - Ray Serve for deployment
+    - PyTorch for model execution
+    - FFmpeg for audio processing
+    - ModelScope for model management
 """
 
 import os
@@ -41,7 +67,10 @@ import torch
 import torchaudio
 from modelscope import snapshot_download
 from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.responses import Response, JSONResponse, StreamingResponse
+from starlette.middleware.cors import CORSMiddleware
+import io
+import wave
 
 from cosyvoice.cli.cosyvoice import CosyVoice2
 from cosyvoice.utils.file_utils import load_wav
@@ -245,6 +274,8 @@ class CosyVoiceService:
     """
 
     def __init__(self) -> None:
+        # Cache for processed reference audio
+        self._reference_audio_cache = {}
         """Initializes the CosyVoiceService.
 
         - Detects and configures GPU usage if available.
@@ -393,6 +424,21 @@ class CosyVoiceService:
         snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')
 
     async def __call__(self, request: Request) -> Response:
+        # Handle CORS preflight request
+        if request.method == "OPTIONS":
+            headers = {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+            return Response("", headers=headers)
+
+        # Add CORS headers to all responses
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
         """Handles incoming HTTP requests.
 
         Processes POST requests for text-to-speech synthesis, supporting
@@ -416,7 +462,6 @@ class CosyVoiceService:
                     form = await request.form()
                     params = dict(form)
 
-                params = self._validate_params(params)
                 path = request.url.path.strip('/')
                 parts = path.split('/')
                 endpoint = parts[-1] if parts else 'tts'  # Default to 'tts' if no endpoint
@@ -425,42 +470,87 @@ class CosyVoiceService:
 
                 if endpoint == "healthcheck":
                     return JSONResponse({"status": "healthy"})
-                elif endpoint == "tts":
-                    outname = f"tts-{int(time.time())}.wav"
-                    output_path = await self.batch('tts', outname, params)
-                elif endpoint == "zero_shot":
-                    outname = f"zero_shot-{int(time.time())}.wav"
-                    output_path = await self.batch('zero_shot', outname, params)
-                elif endpoint == "cross_lingual":
-                    outname = f"cross_lingual-{int(time.time())}.wav"
-                    output_path = await self.batch('cross_lingual', outname, params)
-                elif endpoint == "instruct":
-                    outname = f"instruct-{int(time.time())}.wav"
-                    output_path = await self.batch('instruct', outname, params)
-                else:
+
+                if endpoint not in ["tts", "zero_shot", "cross_lingual", "instruct"]:
                     return JSONResponse(
                         {"error": "Invalid endpoint"},
                         status_code=404
                     )
 
-                with open(output_path, 'rb') as f:
-                    audio_content = f.read()
+                # Validate params for TTS endpoints
+                params = self._validate_params(params)
 
-                try:
-                    Path(output_path).unlink()  # Delete the temporary file
-                except Exception as e:
-                    logger.warning(f"Failed to delete output file {output_path}: {e}")
+                # Check if streaming is requested
+                stream_output = params.get('stream', False)
+                
+                if stream_output:
+                    # Get voice prompt
+                    voice_type = params.get('voice_type')
+                    _, prompt_speech_16k = self._get_prompt_path(voice_type)
+                    
+                    # Create a generator for streaming audio chunks
+                    async def audio_stream():
+                        # First chunk: WAV header
+                        wav_buffer = io.BytesIO()
+                        wav = wave.Wave_write(wav_buffer)
+                        wav.setnchannels(1)  # Mono
+                        wav.setsampwidth(2)  # 16-bit
+                        wav.setframerate(SAMPLE_RATE)
+                        wav.setnframes(0)  # We don't know total frames yet
+                        wav.close()
+                        yield wav_buffer.getvalue()
+                        
+                        # Stream each audio chunk as it's generated
+                        try:
+                            for _, j in enumerate(
+                                self.model.inference_cross_lingual(
+                                    params['text'], prompt_speech_16k, stream=True,
+                                    speed=params['speed']
+                                )
+                            ):
+                                if 'tts_speech' in j and j['tts_speech'] is not None:
+                                    audio = j['tts_speech']
+                                    if audio is not None and audio.numel() > 0:
+                                        # Normalize and convert to 16-bit PCM
+                                        audio = self.audio_processor.normalize_audio(audio)
+                                        audio = audio.cpu()
+                                        audio_int16 = (audio * 32767).to(torch.int16)
+                                        # Send raw audio data
+                                        yield audio_int16.numpy().tobytes()
+                        except Exception as e:
+                            logger.error(f"Error during streaming: {e}")
+                            raise
 
-                return Response(
-                    audio_content,
-                    media_type='audio/x-wav'
-                )
+                    return StreamingResponse(
+                        audio_stream(),
+                        media_type='audio/wav',
+                        headers=headers
+                    )
+                else:
+                    # Generate audio based on endpoint
+                    outname = f"{endpoint}-{int(time.time())}.wav"
+                    output_path = await self.batch(endpoint, outname, params)
+
+                    with open(output_path, 'rb') as f:
+                        audio_content = f.read()
+
+                    try:
+                        Path(output_path).unlink()  # Delete the temporary file
+                    except Exception as e:
+                        logger.warning(f"Failed to delete output file {output_path}: {e}")
+
+                    return Response(
+                        audio_content,
+                        media_type='audio/x-wav',
+                        headers=headers
+                    )
 
         except Exception as e:
             logger.error(f"Request processing failed: {e}")
             return JSONResponse(
                 {"error": str(e)},
-                status_code=400
+                status_code=400,
+                headers=headers
             )
 
     def _validate_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -482,14 +572,14 @@ class CosyVoiceService:
         params['speed'] = float(params.get('speed', 1.0))  # Ensure speed is a float
         return params
 
-    def _get_prompt_path(self, voice_type: Optional[str] = None) -> str:
-        """Gets the path to the voice prompt audio file.
+    def _get_prompt_path(self, voice_type: Optional[str] = None) -> Tuple[str, torch.Tensor]:
+        """Gets the path to the voice prompt audio file and its processed tensor.
 
         Args:
             voice_type: The type of voice to use (e.g., "qwen").
 
         Returns:
-            The absolute path to the voice prompt audio file.
+            A tuple of (file path, processed audio tensor).
 
         Raises:
             Exception: If the specified voice type is unknown or the
@@ -503,7 +593,28 @@ class CosyVoiceService:
         voice_path = Path(project_dir) / self.voice_prompts[voice_type]
         if not voice_path.exists():
             raise Exception(f"Voice prompt file not found: {voice_path}")
-        return str(voice_path.resolve())
+
+        path = str(voice_path.resolve())
+
+        # Check cache first
+        if path in self._reference_audio_cache:
+            return path, self._reference_audio_cache[path]
+
+        # Process and cache if not found
+        ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
+        try:
+            self.audio_processor.process_reference_audio(path, ref_audio)
+            prompt_speech_16k = load_wav(ref_audio, 16000)
+            Path(ref_audio).unlink()
+
+            # Cache the processed audio
+            self._reference_audio_cache[path] = prompt_speech_16k
+            return path, prompt_speech_16k
+        except Exception as e:
+            logger.error(f"Reference audio processing failed: {e}")
+            if os.path.exists(ref_audio):
+                Path(ref_audio).unlink()
+            raise
 
     async def batch(self, tts_type: str, outname: str, params: Dict[str, Any]) -> str:
         """Performs batch text-to-speech processing.
@@ -523,36 +634,97 @@ class CosyVoiceService:
             Exception: If any error occurs during audio generation or processing.
         """
         try:
-            # Process reference audio
+            # Get reference audio (now uses caching)
             if tts_type == 'tts':
                 # Use default qwen.wav as reference audio
                 voice_type = params.get('voice_type')
-                prompt_path = self._get_prompt_path(voice_type)
-                ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
-                try:
-                    self.audio_processor.process_reference_audio(prompt_path, ref_audio)
-                    prompt_speech_16k = load_wav(ref_audio, 16000)
-                    Path(ref_audio).unlink()
-                except Exception as e:
-                    logger.error(f"Reference audio processing failed: {e}")
-                    if os.path.exists(ref_audio):
-                        Path(ref_audio).unlink()
-                    raise
+                _, prompt_speech_16k = self._get_prompt_path(voice_type)
 
-                # Use cross_lingual mode
-                audio_list = []
-                for _, j in enumerate(
-                    self.model.inference_cross_lingual(
-                        params['text'], prompt_speech_16k, stream=False,
-                        speed=params['speed']
+                # Check if streaming is requested
+                stream_output = params.get('stream', False)
+                if stream_output:
+                    # Handle streaming request by collecting all chunks first
+                    audio_list = []
+                    for _, j in enumerate(
+                        self.model.inference_cross_lingual(
+                            params['text'], prompt_speech_16k, stream=True,
+                            speed=params['speed']
+                        )
+                    ):
+                        if 'tts_speech' in j and j['tts_speech'] is not None:
+                            audio = j['tts_speech']
+                            if audio is not None and audio.numel() > 0:  # Less strict validation
+                                audio = self.audio_processor.normalize_audio(audio)
+                                audio = audio.cpu()
+                                audio_list.append(audio)
+
+                    if not audio_list:
+                        raise Exception("Failed to generate valid audio")
+
+                    # Concatenate audio segments
+                    audio_data = torch.cat(audio_list, dim=1)
+
+                    # Save to memory buffer
+                    buffer = io.BytesIO()
+                    torchaudio.save(
+                        buffer,
+                        audio_data,
+                        SAMPLE_RATE,
+                        format="wav",
+                        encoding='PCM_S',
+                        bits_per_sample=16
                     )
-                ):
-                    if 'tts_speech' in j and j['tts_speech'] is not None:
-                        audio = j['tts_speech']
-                        if self.audio_processor.validate_audio(audio):
-                            audio_list.append(audio)
-                        else:
-                            logger.warning("Skipping invalid audio segment")
+                    buffer.seek(0)
+
+                    # Save to temporary file
+                    output_path = f"{tmp_dir}/{outname}"
+                    with open(output_path, 'wb') as f:
+                        f.write(buffer.read())
+                    return output_path
+
+                else:
+                    # Handle non-streaming request
+                    audio_list = []
+                    for _, j in enumerate(
+                        self.model.inference_cross_lingual(
+                            params['text'], prompt_speech_16k, stream=False,
+                            speed=params['speed']
+                        )
+                    ):
+                        if 'tts_speech' in j and j['tts_speech'] is not None:
+                            audio = j['tts_speech']
+                            if audio is not None and audio.numel() > 0:  # Less strict validation
+                                audio = self.audio_processor.normalize_audio(audio)
+                                audio = audio.cpu()
+                                audio_list.append(audio)
+
+                    if not audio_list:
+                        raise Exception("Failed to generate valid audio")
+
+                    # Concatenate audio segments
+                    audio_data = torch.cat(audio_list, dim=1)
+
+                    # Save audio to file
+                    output_path = f"{tmp_dir}/{outname}"
+                    torchaudio.save(
+                        output_path,
+                        audio_data,
+                        SAMPLE_RATE,
+                        encoding='PCM_S',
+                        bits_per_sample=16
+                    )
+
+                    # Validate file
+                    if not os.path.exists(output_path):
+                        raise Exception("Audio file failed to save")
+
+                    file_size = os.path.getsize(output_path)
+                    logger.info(f"Generated audio file size: {file_size/1024:.1f}KB")
+
+                    if file_size < 1024:  # Files smaller than 1KB may be problematic
+                        raise Exception("Generated audio file is too small, may be invalid")
+
+                    return output_path
 
             elif tts_type == 'zero_shot':
                 # Use user-provided reference audio and text
@@ -561,18 +733,25 @@ class CosyVoiceService:
                 if not params.get('reference_audio') or not os.path.exists(params['reference_audio']):
                     raise Exception(f"Reference audio not found: {params['reference_audio']}")
 
-                ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
-                try:
-                    self.audio_processor.process_reference_audio(params['reference_audio'], ref_audio)
-                    prompt_speech_16k = load_wav(ref_audio, 16000)
-                    Path(ref_audio).unlink()
-                except Exception as e:
-                    logger.error(f"Reference audio processing failed: {e}")
-                    if os.path.exists(ref_audio):
+                # Check cache for user reference audio
+                ref_path = str(Path(params['reference_audio']).resolve())
+                if ref_path in self._reference_audio_cache:
+                    prompt_speech_16k = self._reference_audio_cache[ref_path]
+                else:
+                    ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
+                    try:
+                        self.audio_processor.process_reference_audio(params['reference_audio'], ref_audio)
+                        prompt_speech_16k = load_wav(ref_audio, 16000)
                         Path(ref_audio).unlink()
-                    raise
+                        # Cache the processed audio
+                        self._reference_audio_cache[ref_path] = prompt_speech_16k
+                    except Exception as e:
+                        logger.error(f"Reference audio processing failed: {e}")
+                        if os.path.exists(ref_audio):
+                            Path(ref_audio).unlink()
+                        raise
 
-                # Use zero_shot mode
+                # Process audio with incremental generation
                 audio_list = []
                 for _, j in enumerate(
                     self.model.inference_zero_shot(
@@ -583,27 +762,64 @@ class CosyVoiceService:
                     if 'tts_speech' in j and j['tts_speech'] is not None:
                         audio = j['tts_speech']
                         if self.audio_processor.validate_audio(audio):
+                            audio = self.audio_processor.normalize_audio(audio)
+                            audio = audio.cpu()
                             audio_list.append(audio)
                         else:
                             logger.warning("Skipping invalid audio segment")
+
+                if not audio_list:
+                    raise Exception("Failed to generate valid audio")
+
+                # Concatenate audio segments
+                audio_data = torch.cat(audio_list, dim=1)
+
+                # Save audio to file
+                output_path = f"{tmp_dir}/{outname}"
+                torchaudio.save(
+                    output_path,
+                    audio_data,
+                    SAMPLE_RATE,
+                    encoding='PCM_S',
+                    bits_per_sample=16
+                )
+
+                # Validate file
+                if not os.path.exists(output_path):
+                    raise Exception("Audio file failed to save")
+
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Generated audio file size: {file_size/1024:.1f}KB")
+
+                if file_size < 1024:  # Files smaller than 1KB may be problematic
+                    raise Exception("Generated audio file is too small, may be invalid")
+
+                return output_path
 
             elif tts_type == 'cross_lingual':
                 # Use user-provided reference audio
                 if not params.get('reference_audio') or not os.path.exists(params['reference_audio']):
                     raise Exception(f"Reference audio not found: {params['reference_audio']}")
 
-                ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
-                try:
-                    self.audio_processor.process_reference_audio(params['reference_audio'], ref_audio)
-                    prompt_speech_16k = load_wav(ref_audio, 16000)
-                    Path(ref_audio).unlink()
-                except Exception as e:
-                    logger.error(f"Reference audio processing failed: {e}")
-                    if os.path.exists(ref_audio):
+                # Check cache for user reference audio
+                ref_path = str(Path(params['reference_audio']).resolve())
+                if ref_path in self._reference_audio_cache:
+                    prompt_speech_16k = self._reference_audio_cache[ref_path]
+                else:
+                    ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
+                    try:
+                        self.audio_processor.process_reference_audio(params['reference_audio'], ref_audio)
+                        prompt_speech_16k = load_wav(ref_audio, 16000)
                         Path(ref_audio).unlink()
-                    raise
+                        # Cache the processed audio
+                        self._reference_audio_cache[ref_path] = prompt_speech_16k
+                    except Exception as e:
+                        logger.error(f"Reference audio processing failed: {e}")
+                        if os.path.exists(ref_audio):
+                            Path(ref_audio).unlink()
+                        raise
 
-                # Use cross_lingual mode
+                # Process audio with incremental generation
                 audio_list = []
                 for _, j in enumerate(
                     self.model.inference_cross_lingual(
@@ -614,30 +830,50 @@ class CosyVoiceService:
                     if 'tts_speech' in j and j['tts_speech'] is not None:
                         audio = j['tts_speech']
                         if self.audio_processor.validate_audio(audio):
+                            audio = self.audio_processor.normalize_audio(audio)
+                            audio = audio.cpu()
                             audio_list.append(audio)
                         else:
                             logger.warning("Skipping invalid audio segment")
+
+                if not audio_list:
+                    raise Exception("Failed to generate valid audio")
+
+                # Concatenate audio segments
+                audio_data = torch.cat(audio_list, dim=1)
+
+                # Save audio to file
+                output_path = f"{tmp_dir}/{outname}"
+                torchaudio.save(
+                    output_path,
+                    audio_data,
+                    SAMPLE_RATE,
+                    encoding='PCM_S',
+                    bits_per_sample=16
+                )
+
+                # Validate file
+                if not os.path.exists(output_path):
+                    raise Exception("Audio file failed to save")
+
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Generated audio file size: {file_size/1024:.1f}KB")
+
+                if file_size < 1024:  # Files smaller than 1KB may be problematic
+                    raise Exception("Generated audio file is too small, may be invalid")
+
+                return output_path
 
             else:  # instruct
                 # Use instruction control
                 if not params.get('instruction'):
                     raise Exception("Missing required parameter: instruction")
 
-                # Get reference audio
+                # Get reference audio (now uses caching)
                 voice_type = params.get('voice_type')
-                prompt_path = self._get_prompt_path(voice_type)
-                ref_audio = f"{tmp_dir}/-refaudio-{time.time()}.wav"
-                try:
-                    self.audio_processor.process_reference_audio(prompt_path, ref_audio)
-                    prompt_speech_16k = load_wav(ref_audio, 16000)
-                    Path(ref_audio).unlink()
-                except Exception as e:
-                    logger.error(f"Reference audio processing failed: {e}")
-                    if os.path.exists(ref_audio):
-                        Path(ref_audio).unlink()
-                    raise
+                _, prompt_speech_16k = self._get_prompt_path(voice_type)
 
-                # Use instruct2 mode
+                # Process audio with incremental generation
                 audio_list = []
                 for _, j in enumerate(
                     self.model.inference_instruct2(
@@ -650,54 +886,39 @@ class CosyVoiceService:
                     if 'tts_speech' in j and j['tts_speech'] is not None:
                         audio = j['tts_speech']
                         if self.audio_processor.validate_audio(audio):
+                            audio = self.audio_processor.normalize_audio(audio)
+                            audio = audio.cpu()
                             audio_list.append(audio)
                         else:
                             logger.warning("Skipping invalid audio segment")
 
-            if not audio_list:
-                raise Exception("Failed to generate valid audio")
+                if not audio_list:
+                    raise Exception("Failed to generate valid audio")
 
-            # Process audio data
-            logger.info(f"Generated {len(audio_list)} audio segments")
-            for i, audio in enumerate(audio_list):
-                logger.info(f"Audio segment {i}: shape={audio.shape}, type={audio.dtype}")
-                audio_list[i] = self.audio_processor.normalize_audio(audio)
+                # Concatenate audio segments
+                audio_data = torch.cat(audio_list, dim=1)
 
-            # Concatenate audio
-            audio_data = torch.cat(audio_list, dim=1)
-            audio_data = audio_data.to(self.device)
+                # Save audio to file
+                output_path = f"{tmp_dir}/{outname}"
+                torchaudio.save(
+                    output_path,
+                    audio_data,
+                    SAMPLE_RATE,
+                    encoding='PCM_S',
+                    bits_per_sample=16
+                )
 
-            # Ensure audio data is valid
-            if not self.audio_processor.validate_audio(audio_data):
-                raise Exception("Generated audio data is invalid")
+                # Validate file
+                if not os.path.exists(output_path):
+                    raise Exception("Audio file failed to save")
 
-            # Save audio
-            output_path = f"{tmp_dir}/{outname}"
-            audio_data = audio_data.cpu()
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Generated audio file size: {file_size/1024:.1f}KB")
 
-            # Log audio information
-            logger.info(f"Final audio: shape={audio_data.shape}, type={audio_data.dtype}")
-            logger.info(f"Audio stats: min={audio_data.min():.3f}, max={audio_data.max():.3f}")
+                if file_size < 1024:  # Files smaller than 1KB may be problematic
+                    raise Exception("Generated audio file is too small, may be invalid")
 
-            torchaudio.save(
-                output_path,
-                audio_data,
-                SAMPLE_RATE,
-                encoding='PCM_S',
-                bits_per_sample=16
-            )
-
-            # Validate generated file
-            if not os.path.exists(output_path):
-                raise Exception("Audio file failed to save")
-
-            file_size = os.path.getsize(output_path)
-            logger.info(f"Generated audio file size: {file_size/1024:.1f}KB")
-
-            if file_size < 1024:  # Files smaller than 1KB may be problematic
-                raise Exception("Generated audio file is too small, may be invalid")
-
-            return output_path
+                return output_path
 
         except Exception as e:
             logger.error(f"Audio generation failed: {e}")
@@ -754,7 +975,7 @@ def main():
 
         # Deploy service
         logger.info(f"Deploying CosyVoice Service with {gpu_count} replica(s)")
-        
+
         # Create deployment with GPU resources
         deployment = CosyVoiceService.options(
             num_replicas=gpu_count,
@@ -764,7 +985,7 @@ def main():
                 "memory": 4 * 1024 * 1024 * 1024,  # 4GB RAM per replica
             }
         ).bind()
-        
+
         # Run service
         serve.run(
             deployment,

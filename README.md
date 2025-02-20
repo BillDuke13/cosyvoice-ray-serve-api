@@ -97,12 +97,20 @@ python cosyvoice/api.py
 
 The server will be accessible at `http://localhost:9998`.
 
-
 ### API Endpoints
+
+The service exposes several HTTP endpoints for different TTS operations. All endpoints support both regular and streaming responses.
 
 #### 1. Standard TTS (`/v1/model/cosyvoice/tts`)
 
-Synthesizes speech from text using a specified voice type.
+Synthesizes speech from text using a specified voice type. This is the most basic and efficient endpoint for standard TTS operations.
+
+**Features:**
+- Streaming support for real-time audio generation
+- Voice type selection with default "qwen" voice
+- Adjustable speech speed
+- Automatic audio normalization and validation
+- Reference audio caching for improved performance
 
 **Method:** `POST`
 
@@ -111,18 +119,24 @@ Synthesizes speech from text using a specified voice type.
 {
     "text": "Text to synthesize",        // Required: Text to convert to speech
     "voice_type": "qwen",               // Optional: Voice type to use (default: "qwen")
-    "speed": 1.0                        // Optional: Speech speed multiplier (default: 1.0)
+    "speed": 1.0,                       // Optional: Speech speed multiplier (default: 1.0)
+    "stream": false                     // Optional: Enable streaming output (default: false)
 }
 ```
 
 **Response:**
+For non-streaming requests:
 - Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Body: WAV audio file (24kHz sample rate, 16-bit PCM)
+
+For streaming requests:
+- Content-Type: `audio/wav`
+- Body: Chunked audio stream
 
 **Error Responses:**
-- 400: Invalid request parameters or missing required parameter: text.
-- 404: Voice type not found
-- 500: Internal server error
+- 400: Invalid request parameters or missing required parameter
+- 404: Voice type not found or invalid endpoint
+- 500: Internal server error (audio processing, model inference, etc.)
 
 **Example:**
 ```bash
@@ -139,7 +153,14 @@ curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
 **Response:** The API returns a WAV file containing the synthesized speech.
 
 #### 2. Zero-shot Voice Cloning (`/v1/model/cosyvoice/zero_shot`)
-Clones a voice from a reference audio file and uses it to speak text, given the reference audio and the reference text.
+Clones a voice from a reference audio file and uses it to speak text, given the reference audio and its corresponding text. This endpoint enables voice cloning without requiring extensive training data.
+
+**Features:**
+- High-quality voice cloning from a single audio sample
+- Preserves speaker characteristics and style
+- Automatic reference audio processing and caching
+- Supports adjustable speech speed
+- Robust audio validation and error handling
 
 **Method:** `POST`
 
@@ -148,18 +169,31 @@ Clones a voice from a reference audio file and uses it to speak text, given the 
 {
     "text": "Text to synthesize",             // Required: Text to speak
     "reference_audio": "path/to/audio.wav",   // Required: Reference voice audio file
-    "reference_text": "Reference text",        // Required: Text content of reference audio
-    "speed": 1.0                             // Optional: Speech speed multiplier (default: 1.0)
+    "reference_text": "Reference text",       // Required: Text content of reference audio
+    "speed": 1.0,                            // Optional: Speech speed multiplier (default: 1.0)
+    "stream": false                          // Optional: Enable streaming output (default: false)
 }
 ```
 
 **Response:**
+For non-streaming requests:
 - Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Body: WAV audio file (24kHz sample rate, 16-bit PCM)
+
+For streaming requests:
+- Content-Type: `audio/wav`
+- Body: Chunked audio stream
+
+**Technical Details:**
+- Reference audio is automatically processed to 16kHz mono format
+- Audio is validated for quality and format compliance
+- Processed reference audio is cached for improved performance
+- Supports various input audio formats through FFmpeg conversion
 
 **Error Responses:**
 - 400: Missing required parameters or invalid audio file
-- 500: Audio processing or synthesis error
+- 404: Reference audio file not found
+- 500: Audio processing or synthesis error (with detailed error messages)
 
 **Example:**
 ```bash
@@ -173,6 +207,7 @@ curl -X POST http://localhost:9998/v1/model/cosyvoice/zero_shot \
     }' \
     --output output.wav
 ```
+
 #### 3. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/cross_lingual`)
 
 Clones a voice from a reference audio file and uses it to speak text in any supported language.
