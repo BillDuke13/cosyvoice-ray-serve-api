@@ -1,40 +1,54 @@
-# CosyVoice: High-Performance Text-to-Speech Service
+# CosyVoice Ray Serve API
 
-CosyVoice is a high-performance Text-to-Speech (TTS) service built using Ray Serve. It provides a RESTful API for various TTS tasks, including standard text-to-speech, cross-lingual voice cloning, and same-language voice cloning. The service is designed for high availability, efficient resource utilization, and automatic GPU acceleration when available.
+This project provides a Ray Serve-based HTTP API wrapper around [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), a high-quality Text-to-Speech (TTS) system.
 
-Key capabilities:
-- High-quality speech synthesis with multiple voice types
-- Cross-lingual voice cloning with accent preservation
-- Same-language voice cloning for precise voice matching
-- Automatic GPU acceleration with CPU fallback
-- Efficient resource management and cleanup
-- Health monitoring and graceful shutdown
+## Overview
+
+This API service extends the original CosyVoice project by:
+- Adding a RESTful API interface using Ray Serve
+- Providing containerized deployment
+- Adding health monitoring and graceful shutdown
+- Implementing efficient resource management
 
 ## Features
 
-- Standard text-to-speech synthesis
-- Cross-lingual voice cloning
+All core TTS capabilities are provided by the original CosyVoice project:
+- High-quality speech synthesis
+- Cross-lingual voice cloning with accent preservation 
 - Same-language voice cloning
-- Support for multiple languages (Chinese, English, Japanese, Cantonese, Korean)
+- Support for multiple languages:
+  - Chinese
+  - English
+  - Japanese
+  - Cantonese
+  - Korean
 - Multiple voice types (male/female)
 - Adjustable speech speed
-- RESTful API interface
 
 ## Table of Contents
-- [Features](#features)
-- [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
+- [CosyVoice Ray Serve API](#cosyvoice-ray-serve-api)
+  - [Overview](#overview)
+  - [Features](#features)
+  - [Table of Contents](#table-of-contents)
+  - [Getting Started](#getting-started)
+    - [Prerequisites](#prerequisites)
   - [Installation](#installation)
-- [Usage](#usage)
-  - [Starting the Server](#starting-the-server)
-  - [API Endpoints](#api-endpoints)
-- [Configuration](#configuration)
-- [Environment Variables](#environment-variables)
-- [Project Structure](#project-structure)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgments](#acknowledgments)
+  - [Usage](#usage)
+    - [Starting the Server](#starting-the-server)
+    - [API Endpoints](#api-endpoints)
+      - [1. Standard TTS (`/v1/model/cosyvoice/tts`)](#1-standard-tts-v1modelcosyvoicetts)
+      - [2. Zero-shot Voice Cloning (`/v1/model/cosyvoice/zero_shot`)](#2-zero-shot-voice-cloning-v1modelcosyvoicezero_shot)
+      - [3. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/cross_lingual`)](#3-cross-lingual-voice-cloning-v1modelcosyvoicecross_lingual)
+      - [4. Instruction-based TTS (`/v1/model/cosyvoice/instruct`)](#4-instruction-based-tts-v1modelcosyvoiceinstruct)
+  - [Configuration](#configuration)
+    - [Environment Variables](#environment-variables)
+    - [Project Structure](#project-structure)
+  - [Troubleshooting](#troubleshooting)
+    - [Common Issues](#common-issues)
+    - [Logs](#logs)
+  - [Contributing](#contributing)
+  - [License](#license)
+  - [Acknowledgments](#acknowledgments)
 
 ## Getting Started
 
