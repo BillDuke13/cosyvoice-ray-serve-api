@@ -1,37 +1,57 @@
 """CosyVoice2 Text-to-Speech Service API.
 
-This module implements a high-performance Ray Serve based HTTP API for text-to-speech synthesis
-using the CosyVoice2 model. The service provides multiple synthesis modes and features:
+This module provides a Ray Serve based HTTP API for text-to-speech synthesis
+using the CosyVoice2 model. The API is designed for high-performance, scalable
+deployment with GPU acceleration and efficient resource management.
 
-Key Features:
-    - Standard text-to-speech with predefined voices
-    - Zero-shot voice cloning from reference audio
-    - Cross-lingual synthesis preserving speaker characteristics
-    - Instruction-based synthesis for fine-grained control
-    - Streaming audio output support
-    - Automatic GPU acceleration with CPU fallback
-    - Resource management and cleanup
-    - Health monitoring
+Features:
+1. Zero-shot voice cloning - Clone any voice with a single audio sample
+2. Cross-lingual synthesis - Maintain voice identity across different languages
+3. Instruction-based synthesis - Control speech characteristics with natural language
+4. Fine-grained control - Adjust emotions, prosody, and speaking style
+5. Streaming audio generation - Real-time audio synthesis for low-latency applications
+6. Reference audio caching - Improved performance for repeated voice cloning
 
-Endpoints:
-    - /v1/model/cosyvoice/tts: Standard TTS synthesis
-    - /v1/model/cosyvoice/zero_shot: Zero-shot voice cloning
-    - /v1/model/cosyvoice/cross_lingual: Cross-lingual synthesis
-    - /v1/model/cosyvoice/instruct: Instruction-based synthesis
+The implementation uses Ray Serve for deployment management and scaling,
+with automatic GPU detection and allocation. It includes comprehensive
+error handling, logging, and resource management.
 
-Technical Details:
-    - Uses Ray Serve for deployment and scaling
-    - Supports both CPU and GPU execution
-    - Implements caching for reference audio processing
-    - Provides automatic resource cleanup
-    - Handles CORS and streaming responses
-    - Includes comprehensive logging and error handling
+The API exposes several HTTP endpoints:
+- /v1/model/cosyvoice/tts: Standard text-to-speech with default voice
+- /v1/model/cosyvoice/zero_shot: Zero-shot voice cloning
+- /v1/model/cosyvoice/cross_lingual: Cross-lingual voice cloning
+- /v1/model/cosyvoice/instruct: Instruction-based TTS
+- /v1/model/cosyvoice/healthcheck: Health monitoring endpoint
 
-Dependencies:
-    - Ray Serve for deployment
-    - PyTorch for model execution
-    - FFmpeg for audio processing
-    - ModelScope for model management
+Example usage:
+    # Start the service
+    python cosyvoice/api.py
+    
+    # Make a request to the API
+    curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
+        -H "Content-Type: application/json" \
+        -d '{"text": "Hello world", "voice_type": "qwen"}' \
+        --output output.wav
+        
+    # Zero-shot voice cloning
+    curl -X POST http://localhost:9998/v1/model/cosyvoice/zero_shot \
+        -H "Content-Type: application/json" \
+        -d '{
+            "text": "Hello world",
+            "reference_audio": "/path/to/audio.wav",
+            "reference_text": "Reference text"
+        }' \
+        --output output.wav
+        
+    # Streaming audio generation
+    curl -X POST http://localhost:9998/v1/model/cosyvoice/tts \
+        -H "Content-Type: application/json" \
+        -d '{
+            "text": "Hello world",
+            "voice_type": "qwen",
+            "stream": true
+        }' \
+        --output output.wav
 """
 
 import os
@@ -109,7 +129,19 @@ import gzip
 import shutil
 
 class GZipRotator:
+    """Rotator for log files that compresses rotated logs with gzip.
+    
+    This class is used with TimedRotatingFileHandler to compress
+    rotated log files, saving disk space while maintaining log history.
+    """
+    
     def __call__(self, source, dest):
+        """Compress the rotated log file with gzip.
+        
+        Args:
+            source: Path to the source log file.
+            dest: Path to the destination log file.
+        """
         with open(source, 'rb') as f_in:
             with gzip.open(f"{dest}.gz", 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
@@ -274,8 +306,6 @@ class CosyVoiceService:
     """
 
     def __init__(self) -> None:
-        # Cache for processed reference audio
-        self._reference_audio_cache = {}
         """Initializes the CosyVoiceService.
 
         - Detects and configures GPU usage if available.
@@ -284,6 +314,8 @@ class CosyVoiceService:
         - Configures voice prompts.
         - Registers a cleanup handler for resource management.
         """
+        # Cache for processed reference audio
+        self._reference_audio_cache = {}
         if torch.cuda.is_available():
             try:
                 # Get GPU IDs assigned by Ray
@@ -424,21 +456,6 @@ class CosyVoiceService:
         snapshot_download('iic/CosyVoice2-0.5B', local_dir='pretrained_models/CosyVoice2-0.5B')
 
     async def __call__(self, request: Request) -> Response:
-        # Handle CORS preflight request
-        if request.method == "OPTIONS":
-            headers = {
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            }
-            return Response("", headers=headers)
-
-        # Add CORS headers to all responses
-        headers = {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
         """Handles incoming HTTP requests.
 
         Processes POST requests for text-to-speech synthesis, supporting
@@ -454,6 +471,21 @@ class CosyVoiceService:
         Raises:
             Exception: If any error occurs during request processing.
         """
+        # Handle CORS preflight request
+        if request.method == "OPTIONS":
+            headers = {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+            return Response("", headers=headers)
+
+        # Add CORS headers to all responses
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
         try:
             if request.method == "POST":
                 if request.headers.get("content-type") == "application/json":
@@ -482,12 +514,12 @@ class CosyVoiceService:
 
                 # Check if streaming is requested
                 stream_output = params.get('stream', False)
-                
+
                 if stream_output:
                     # Get voice prompt
                     voice_type = params.get('voice_type')
                     _, prompt_speech_16k = self._get_prompt_path(voice_type)
-                    
+
                     # Create a generator for streaming audio chunks
                     async def audio_stream():
                         # First chunk: WAV header
@@ -499,23 +531,29 @@ class CosyVoiceService:
                         wav.setnframes(0)  # We don't know total frames yet
                         wav.close()
                         yield wav_buffer.getvalue()
-                        
+
                         # Stream each audio chunk as it's generated
                         try:
+                            # Use the cross-lingual inference mode with streaming enabled
+                            # This generates audio incrementally as chunks become available
                             for _, j in enumerate(
                                 self.model.inference_cross_lingual(
                                     params['text'], prompt_speech_16k, stream=True,
                                     speed=params['speed']
                                 )
                             ):
+                                # Extract audio chunk from model output
                                 if 'tts_speech' in j and j['tts_speech'] is not None:
                                     audio = j['tts_speech']
                                     if audio is not None and audio.numel() > 0:
-                                        # Normalize and convert to 16-bit PCM
+                                        # Normalize audio to [-1, 1] range
                                         audio = self.audio_processor.normalize_audio(audio)
+                                        # Move tensor to CPU for further processing
                                         audio = audio.cpu()
+                                        # Convert float32 [-1, 1] to int16 PCM format
+                                        # Scale by 32767 to use full 16-bit range
                                         audio_int16 = (audio * 32767).to(torch.int16)
-                                        # Send raw audio data
+                                        # Convert to bytes and yield to client
                                         yield audio_int16.numpy().tobytes()
                         except Exception as e:
                             logger.error(f"Error during streaming: {e}")
@@ -925,7 +963,23 @@ class CosyVoiceService:
             raise
 
 def main():
-    """Main function to start the CosyVoice service."""
+    """Main function to start the CosyVoice service.
+    
+    This function:
+    1. Detects available GPUs
+    2. Connects to a Ray cluster (or starts one if not available)
+    3. Starts the Ray Serve service
+    4. Deploys the CosyVoiceService with appropriate resources
+    5. Sets up routing for the API endpoints
+    
+    The service is deployed with one replica per available GPU,
+    with each replica getting one dedicated GPU. If no GPUs are
+    available, the function will raise an error.
+    
+    Raises:
+        RuntimeError: If no GPUs are available.
+        Exception: If any error occurs during service startup.
+    """
     try:
         # Get GPU count
         gpu_count = torch.cuda.device_count()
