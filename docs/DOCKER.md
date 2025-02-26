@@ -2,6 +2,7 @@
 
 This document provides technical details about the Docker implementation for the CosyVoice Ray Serve API.
 
+
 ## Overview
 
 The Docker implementation enables containerized deployment of the CosyVoice Ray Serve API, providing a consistent and isolated environment for running the service. The implementation is based on NVIDIA's CUDA container for GPU support.
@@ -71,7 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 Installs required system packages:
 - Python 3.11 with development headers
-- FFmpeg for audio processing
+- FFmpeg for audio processing and MP3 encoding
 - Sox for sound processing
 - Build tools for compiling dependencies
 - Curl for health checks
@@ -250,6 +251,20 @@ The Docker implementation includes several security measures:
 3. **Clean Image**: Removes package lists after installation
 4. **Isolated Environment**: Provides process isolation
 
+## Audio Processing
+
+The Docker container includes all necessary components for audio processing:
+
+1. **FFmpeg**: Used for audio format conversion, particularly for MP3 encoding
+2. **Sox**: Used for audio processing and manipulation
+3. **TorchAudio**: PyTorch's audio processing library
+
+The API uses these components to:
+- Process reference audio files for voice cloning
+- Convert generated audio to MP3 format for efficient delivery
+- Support streaming audio generation with real-time MP3 encoding
+- Validate and normalize audio data
+
 ## Performance Optimization
 
 The container is optimized for performance:
@@ -258,6 +273,8 @@ The container is optimized for performance:
 2. **Memory Allocation**: Configured for efficient memory usage
 3. **CPU Utilization**: Automatically detects and uses available CPUs
 4. **Caching Disabled**: Prevents unnecessary disk usage
+5. **MP3 Compression**: Reduces bandwidth usage and storage requirements
+6. **Efficient Audio Processing**: Keeps processing on GPU as much as possible
 
 ## Troubleshooting
 
@@ -282,3 +299,13 @@ Common issues and solutions:
    - Adjust `PYTORCH_CUDA_ALLOC_CONF` environment variable
    - Limit concurrent requests
    - Consider using a host with more GPU memory
+
+5. **Audio Processing Errors**
+   - Verify FFmpeg installation with `docker exec cosyvoice-api ffmpeg -version`
+   - Check for FFmpeg errors in logs
+   - Ensure sufficient disk space for temporary audio files
+
+6. **Streaming Issues**
+   - Check network stability between container and client
+   - Verify client supports MP3 streaming
+   - Increase buffer size if experiencing interruptions

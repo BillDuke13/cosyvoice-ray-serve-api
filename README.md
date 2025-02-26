@@ -1,18 +1,17 @@
 # CosyVoice Ray Serve API
 
-This project provides a Ray Serve-based HTTP API wrapper around [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), a high-quality Text-to-Speech (TTS) system. It extends the original project with features like RESTful API, Docker deployment, health monitoring, and streaming audio generation.
-
+This project provides a Ray Serve-based HTTP API wrapper around [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), a high-quality Text-to-Speech (TTS) system. It extends the original project with features like RESTful API, Docker deployment, health monitoring, streaming audio generation, and efficient resource management.
 ## Overview
 
 CosyVoice Ray Serve API enhances the original CosyVoice project by providing a scalable, production-ready API service for text-to-speech synthesis. The implementation uses Ray Serve for deployment management and scaling, with automatic GPU detection and allocation. It includes comprehensive error handling, logging, and resource management.
 
-Key enhancements include:
-- RESTful API interface using Ray Serve
-- Containerized deployment with Docker
-- Health monitoring and graceful shutdown
-- Efficient GPU resource management
-- Streaming audio generation
-- Reference audio caching for improved performance
+The codebase has been optimized for maintainability, performance, and reliability with:
+- Well-structured code with clear separation of concerns
+- Comprehensive documentation and code comments
+- Efficient GPU resource management with graceful CPU fallback
+- Reference audio caching for improved performance 
+- Streaming audio generation with real-time MP3 encoding
+- Robust error handling and validation
 
 ## Features
 
@@ -31,6 +30,7 @@ All core TTS capabilities are provided by the original CosyVoice project:
 - **Multiple Voice Types**: Support for various voice types (male/female)
 - **Adjustable Speech Speed**: Control the pace of speech generation
 - **Streaming Audio Generation**: Real-time audio synthesis for low-latency applications
+- **MP3 Format Support**: Efficient audio compression for smaller file sizes
 
 ## Getting Started
 
@@ -159,13 +159,13 @@ Synthesizes speech from text using a specified voice type.
 
 For non-streaming requests:
 
-- Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Content-Type: `audio/mpeg`
+- Body: MP3 audio file (24kHz sample rate)
 
 For streaming requests:
 
-- Content-Type: `audio/wav`
-- Body: Chunked audio stream
+- Content-Type: `audio/mpeg`
+- Body: Chunked MP3 audio stream
 
 #### 2. Zero-shot Voice Cloning (`/v1/model/cosyvoice/zero_shot`)
 
@@ -187,8 +187,8 @@ Clones a voice from a reference audio file and uses it to speak text.
 
 **Response:**
 
-- Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Content-Type: `audio/mpeg`
+- Body: MP3 audio file (24kHz sample rate)
 
 #### 3. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/cross_lingual`)
 
@@ -209,8 +209,8 @@ Clones a voice from a reference audio file and uses it to speak text in any supp
 
 **Response:**
 
-- Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Content-Type: `audio/mpeg`
+- Body: MP3 audio file (24kHz sample rate)
 
 #### 4. Instruction-based TTS (`/v1/model/cosyvoice/instruct`)
 
@@ -231,8 +231,8 @@ Synthesizes speech from text with specific instructions on voice style.
 
 **Response:**
 
-- Content-Type: `audio/x-wav`
-- Body: WAV audio file (24kHz sample rate)
+- Content-Type: `audio/mpeg`
+- Body: MP3 audio file (24kHz sample rate)
 
 #### 5. Health Check (`/v1/model/cosyvoice/healthcheck`)
 
@@ -256,26 +256,41 @@ The service is implemented as a Ray Serve deployment class (`CosyVoiceService`) 
 4. Manages GPU resources.
 5. Provides streaming and non-streaming responses.
 
+### Code Structure
+
+The API implementation follows a clean, modular design:
+
+- **AudioProcessor class**: Encapsulates audio processing operations including normalization, validation, and format conversion
+- **CosyVoiceService class**: Main Ray Serve deployment class with methods for:
+  - Device setup and GPU resource management
+  - Model initialization and cleanup
+  - Reference audio processing and caching
+  - TTS operations (standard, zero-shot, cross-lingual, instruction-based)
+  - Streaming and non-streaming response creation
+  - HTTP request handling with proper CORS support
+
+The code includes comprehensive error handling, graceful degradation (GPU to CPU fallback), and optimizations like audio caching for improved performance.
+
 ### GPU Resource Management
 
-The service includes GPU resource management:
+The service includes intelligent GPU resource management:
 
-- Automatic GPU detection.
-- GPU assignment to service replicas.
-- Optimized CUDA memory allocation.
-- Fallback to CPU if GPU initialization fails.
-- Proper resource cleanup on shutdown.
+- Automatic GPU detection with detailed logging
+- Ray GPU assignment and mapping to CUDA devices
+- GPU memory optimization with efficient tensor handling
+- Graceful fallback to CPU when GPU is unavailable or initialization fails
+- Proper resource cleanup on shutdown to prevent memory leaks
 
 ### Audio Processing Pipeline
 
-The audio processing pipeline includes:
+The optimized audio processing pipeline includes:
 
 1. Text preprocessing.
-2. Reference audio processing (for voice cloning).
+2. Reference audio processing with caching for voice cloning.
 3. Voice synthesis using the CosyVoice model.
 4. Post-processing (normalization, validation).
-5. Format conversion to WAV.
-6. Streaming support.
+5. Format conversion to MP3 using FFmpeg.
+6. Streaming support with real-time MP3 encoding.
 
 ## Configuration
 
@@ -325,6 +340,9 @@ cosyvoice-ray-serve-api/
 4. **Model Loading Errors:**
    - **Symptom:** Model fails to load or initialize.
    - **Solution:** Check internet connection, verify disk space, try CPU-only mode.
+5. **Streaming Issues:**
+   - **Symptom:** Audio streaming stops or produces corrupted audio.
+   - **Solution:** Check network stability, increase buffer size, verify client supports MP3 streaming.
 
 ### Logs
 
