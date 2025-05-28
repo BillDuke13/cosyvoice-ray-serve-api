@@ -1,378 +1,277 @@
 # CosyVoice Ray Serve API
 
-This project provides a Ray Serve-based HTTP API wrapper around [CosyVoice](https://github.com/FunAudioLLM/CosyVoice), a high-quality Text-to-Speech (TTS) system. It extends the original project with features like RESTful API, Docker deployment, health monitoring, streaming audio generation, and efficient resource management.
-## Overview
+This project provides a Ray Serve-based HTTP API for the [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) Text-to-Speech (TTS) system. It enables scalable and robust deployment of CosyVoice, offering features like RESTful API endpoints, Docker containerization, health monitoring, streaming audio generation, and efficient resource management.
 
-CosyVoice Ray Serve API enhances the original CosyVoice project by providing a scalable, production-ready API service for text-to-speech synthesis. The implementation uses Ray Serve for deployment management and scaling, with automatic GPU detection and allocation. It includes comprehensive error handling, logging, and resource management.
+## Project Overview
 
-The codebase has been optimized for maintainability, performance, and reliability with:
-- Well-structured code with clear separation of concerns
-- Comprehensive documentation and code comments
-- Efficient GPU resource management with graceful CPU fallback
-- Reference audio caching for improved performance 
-- Streaming audio generation with real-time MP3 encoding
-- Robust error handling and validation
+The CosyVoice Ray Serve API extends the capabilities of the original CosyVoice project by wrapping it in a production-ready API service. This service is built using Ray Serve, which handles deployment, scaling, and automatic resource allocation (including GPU detection). The implementation emphasizes:
 
-## Features
+- **Maintainability**: Clean, well-structured code with clear separation of concerns.
+- **Performance**: Optimized for speed, including efficient GPU utilization and reference audio caching.
+- **Reliability**: Comprehensive error handling, logging, and robust resource management.
+- **Scalability**: Leverages Ray Serve for automatic scaling of TTS worker replicas.
 
-All core TTS capabilities are provided by the original CosyVoice project:
+## Core Features (from CosyVoice)
 
-- **Zero-shot Voice Cloning**: Clone any voice with a single audio sample
-- **Cross-lingual Synthesis**: Maintain voice identity across different languages
-- **Instruction-based Synthesis**: Control speech characteristics with natural language
-- **Fine-grained Control**: Adjust emotions, prosody, and speaking style
-- **Multiple Language Support**:
-  - Chinese
+This API exposes the powerful TTS capabilities of the underlying CosyVoice model:
+
+- **Zero-shot Voice Cloning**: Replicate any voice from a short audio sample (e.g., 3-10 seconds).
+- **Cross-lingual Speech Synthesis**: Maintain a consistent voice identity when synthesizing speech in different languages.
+- **Instruction-based Speech Synthesis**: Control speech characteristics (emotion, prosody, style) using natural language prompts.
+- **Fine-grained Control**: Adjust various speech parameters for nuanced output.
+- **Multi-language Support**:
+  - Chinese (Mandarin)
   - English
   - Japanese
   - Cantonese
   - Korean
-- **Multiple Voice Types**: Support for various voice types (male/female)
-- **Adjustable Speech Speed**: Control the pace of speech generation
-- **Streaming Audio Generation**: Real-time audio synthesis for low-latency applications
-- **MP3 Format Support**: Efficient audio compression for smaller file sizes
+- **Diverse Voice Types**: Supports a range of male and female voice profiles.
+- **Adjustable Speech Speed**: Control the rate of speech generation.
+- **Streaming Audio Output**: Enables real-time audio synthesis for applications requiring low latency.
+- **MP3 Format Support**: Delivers audio in the efficient MP3 format.
 
 ## Getting Started
+
+Follow these instructions to set up and run the CosyVoice Ray Serve API.
 
 ### Prerequisites
 
 - Python 3.11 (recommended)
-- FFmpeg
-- Sox and Sox development packages
-- CUDA 11.7+ (optional, for GPU acceleration)
-- Ray
-- PyTorch 2.0+
-- Torchaudio
+- FFmpeg (for audio processing)
+- Sox and its development packages (for audio processing)
+- CUDA 11.7 or newer (optional, for GPU acceleration)
+- Ray (core serving framework)
+- PyTorch 2.0 or newer
+- Torchaudio (for audio I/O)
 
-### Installation
+### Installation Options
 
-#### Option 1: Local Installation
+#### Option 1: Local Installation (Recommended for Development)
 
-1. Clone the repository:
+1. **Clone the repository:**
 
    ```bash
    git clone https://github.com/BillDuke13/cosyvoice-ray-serve-api.git
    cd cosyvoice-ray-serve-api
    ```
 
-2. Create and activate conda environment:
+2. **Create and activate a Conda environment:**
 
    ```bash
-   conda create -n cosyvoice-ray-serve-api -y python=3.11
-   conda activate cosyvoice-ray-serve-api
+   conda create -n cosyvoice-api python=3.11 -y
+   conda activate cosyvoice-api
    ```
 
-3. Install system dependencies:
+3. **Install system dependencies:**
+
+   - **For Ubuntu/Debian:**
+
+     ```bash
+     sudo apt-get update
+     sudo apt-get install -y ffmpeg sox libsox-fmt-all libsox-dev
+     ```
+
+   - **For CentOS/RHEL:**
+
+     ```bash
+     sudo yum install -y epel-release
+     sudo yum install -y ffmpeg sox sox-devel
+     ```
+
+   - **For macOS (using Homebrew):**
+
+     ```bash
+     brew install ffmpeg sox
+     ```
+
+4. **Install Python dependencies:**
 
    ```bash
-   # Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install -y ffmpeg sox libsox-fmt-all libsox-dev
-
-   # CentOS/RHEL
-   sudo yum install -y epel-release
-   sudo yum install -y ffmpeg sox sox-devel
-   ```
-
-4. Install Python dependencies:
-
-   ```bash
-   conda install -y -c conda-forge pynini==2.1.5
+   conda install -y -c conda-forge pynini==2.1.5 
    pip install -r requirements.txt
    ```
-5. Download models (automatic on first run)
 
-#### Option 2: Docker Installation
+5. **Model Download:**
+   Models are typically downloaded automatically by the `api.py` script on the first run if they are not found in the `pretrained_models` directory.
 
-1. Clone the repository:
+#### Option 2: Docker Installation (Recommended for Production & Easy Deployment)
+
+1. **Clone the repository:** (If not already done)
 
    ```bash
    git clone https://github.com/BillDuke13/cosyvoice-ray-serve-api.git
    cd cosyvoice-ray-serve-api
    ```
 
-2. Build the Docker image:
+2. **Build the Docker image:**
 
    ```bash
-   docker build -t cosyvoice-ray-serve-api .
+   docker build -t cosyvoice-api:latest .
    ```
 
-3. Run the container:
+   This command uses the provided `Dockerfile` to create a container image with all necessary dependencies and the application code.
+
+### Running the Application
+
+#### Using Docker
+
+1. **Run the Docker container:**
+
+   - **Without GPU support:**
+
+     ```bash
+     docker run -d -p 8000:8000 --name cosyvoice-container cosyvoice-api:latest
+     ```
+
+   - **With GPU support (NVIDIA Docker Toolkit required):**
+
+     ```bash
+     docker run -d --gpus all -p 8000:8000 --name cosyvoice-container cosyvoice-api:latest
+     ```
+
+     Ensure you have the NVIDIA Docker Toolkit installed and configured on your host machine.
+
+2. **Accessing the API:**
+   The API will be available at `http://localhost:8000`.
+
+#### Locally (without Docker)
+
+1. **Ensure all dependencies from Option 1 are installed and the Conda environment is active.**
+
+2. **Start the Ray Serve application:**
+   Navigate to the project's root directory in your terminal and run:
 
    ```bash
-   docker run -d --name cosyvoice-api \
-     --gpus all \
-     -p 9998:9998 \
-     -p 8265:8265 \
-     -v $(pwd)/asset:/app/asset \
-     -v $(pwd)/logs:/app/logs \
-     cosyvoice-ray-serve-api
+   serve run api:cosyvoice_app
    ```
 
-   This will:
+   This command starts a local Ray cluster and deploys the `CosyVoiceService` defined in `api.py`.
 
-   - Mount the local `asset` directory to provide voice prompts.
-   - Mount the local `logs` directory to persist logs.
-   - Expose the API on port 9998.
-   - Expose the Ray dashboard on port 8265.
+3. **Accessing the API:**
+   The API will be available at `http://localhost:8000`.
 
-## Usage
+## API Endpoints
 
-### Starting the Server
+The service exposes the following HTTP endpoints:
 
-1. Start the Ray cluster:
+- **`POST /tts`**: Standard Text-to-Speech.
+  - **Request Body (JSON):**
 
-   ```bash
-   ray start --head --dashboard-host=0.0.0.0 --dashboard-port=8265 --port=6379 --temp-dir=/tmp/ray
-   ```
+    ```json
+    {
+        "text": "Hello, this is a test.",
+        "voice_type": "qwen", // Optional, defaults to "qwen" or a configured default
+        "speed": 1.0,        // Optional, speech speed factor (Note: effect may vary by model method)
+        "stream": false      // Optional, set to true for streaming response
+    }
+    ```
 
-2. Set the Ray address and start the service:
+  - **Response:** MP3 audio file or a streaming audio response if `stream` is true.
 
-   ```bash
-   python cosyvoice/api.py
-   ```
+- **`POST /zero_shot_tts`**: Zero-shot voice cloning.
+  - **Request Body (form-data):**
+    - `text`: The text to synthesize.
+    - `reference_text`: The transcript of the reference audio.
+    - `reference_audio`: The reference audio file (e.g., WAV, MP3).
+    - `speed` (optional): Speech speed factor.
+    - `stream` (optional): Set to true for streaming response.
+  - **Response:** MP3 audio file or a streaming audio response.
 
-The server will be accessible at `http://localhost:9998`.
+- **`POST /cross_lingual_tts`**: Cross-lingual voice synthesis.
+  - **Request Body (form-data):**
+    - `text`: The text to synthesize (can be in a different language than the reference).
+    - `reference_audio`: The reference audio file.
+    - `speed` (optional): Speech speed factor.
+    - `stream` (optional): Set to true for streaming response.
+  - **Response:** MP3 audio file or a streaming audio response.
 
-### API Endpoints
+- **`POST /instruct_tts`**: Instruction-based speech synthesis.
+  - **Request Body (JSON):**
 
-The service exposes several HTTP endpoints for different TTS operations. All endpoints support both regular and streaming responses.
+    ```json
+    {
+        "text": "Can you say this with a happy tone?",
+        "instruction": "Speak happily and energetically.",
+        "voice_type": "qwen", // Optional
+        "speed": 1.0         // Optional
+    }
+    ```
 
-#### 1. Standard TTS (`/v1/model/cosyvoice/tts`)
+  - **Response:** MP3 audio file.
 
-Synthesizes speech from text using a specified voice type.
+- **`GET /health`**: Health check endpoint.
+  - **Response:**
 
-**Method:** `POST`
+    ```json
+    {"status": "healthy", "timestamp": "YYYY-MM-DDTHH:MM:SS.ffffff"}
+    ```
 
-**Request Body:**
-
-```json
-{
-    "text": "Text to synthesize", // Required
-    "voice_type": "qwen",        // Optional (default: "qwen")
-    "speed": 1.0,                // Optional (default: 1.0)
-    "stream": false              // Optional, enable streaming output (default: false)
-}
-```
-
-**Response:**
-
-For non-streaming requests:
-
-- Content-Type: `audio/mpeg`
-- Body: MP3 audio file (24kHz sample rate)
-
-For streaming requests:
-
-- Content-Type: `audio/mpeg`
-- Body: Chunked MP3 audio stream
-
-#### 2. Zero-shot Voice Cloning (`/v1/model/cosyvoice/zero_shot`)
-
-Clones a voice from a reference audio file and uses it to speak text.
-
-**Method:** `POST`
-
-**Request Body:**
-
-```json
-{
-    "text": "Text to synthesize",          // Required
-    "reference_audio": "path/to/audio.wav", // Required
-    "reference_text": "Reference text",    // Required
-    "speed": 1.0,                          // Optional (default: 1.0)
-    "stream": false                        // Optional, enable streaming output (default: false)
-}
-```
-
-**Response:**
-
-- Content-Type: `audio/mpeg`
-- Body: MP3 audio file (24kHz sample rate)
-
-#### 3. Cross-lingual Voice Cloning (`/v1/model/cosyvoice/cross_lingual`)
-
-Clones a voice from a reference audio file and uses it to speak text in any supported language.
-
-**Method:** `POST`
-
-**Request Body:**
-
-```json
-{
-    "text": "Text to synthesize",          // Required
-    "reference_audio": "path/to/audio.wav", // Required
-    "speed": 1.0,                          // Optional (default: 1.0)
-    "stream": false                        // Optional, enable streaming output (default: false)
-}
-```
-
-**Response:**
-
-- Content-Type: `audio/mpeg`
-- Body: MP3 audio file (24kHz sample rate)
-
-#### 4. Instruction-based TTS (`/v1/model/cosyvoice/instruct`)
-
-Synthesizes speech from text with specific instructions on voice style.
-
-**Method:** `POST`
-
-**Request Body:**
-
-```json
-{
-    "text": "Text to synthesize",  // Required
-    "instruction": "Instruction",  // Required
-    "voice_type": "qwen",          // Optional (default: "qwen")
-    "speed": 1.0                   // Optional (default: 1.0)
-}
-```
-
-**Response:**
-
-- Content-Type: `audio/mpeg`
-- Body: MP3 audio file (24kHz sample rate)
-
-#### 5. Health Check (`/v1/model/cosyvoice/healthcheck`)
-
-Checks if the service is running properly.
-
-**Method:** `POST`
-
-**Response:**
-- Content-Type: `application/json`
-- Body: `{"status": "healthy"}`
-
-## Architecture
-
-### Ray Serve Integration
-
-The service is implemented as a Ray Serve deployment class (`CosyVoiceService`) that:
-
-1. Initializes the CosyVoice model.
-2. Handles HTTP requests.
-3. Processes audio data.
-4. Manages GPU resources.
-5. Provides streaming and non-streaming responses.
-
-### Code Structure
-
-The API implementation follows a clean, modular design:
-
-- **AudioProcessor class**: Encapsulates audio processing operations including normalization, validation, and format conversion
-- **CosyVoiceService class**: Main Ray Serve deployment class with methods for:
-  - Device setup and GPU resource management
-  - Model initialization and cleanup
-  - Reference audio processing and caching
-  - TTS operations (standard, zero-shot, cross-lingual, instruction-based)
-  - Streaming and non-streaming response creation
-  - HTTP request handling with proper CORS support
-
-The code includes comprehensive error handling, graceful degradation (GPU to CPU fallback), and optimizations like audio caching for improved performance.
-
-### GPU Resource Management
-
-The service includes intelligent GPU resource management:
-
-- Automatic GPU detection with detailed logging
-- Ray GPU assignment and mapping to CUDA devices
-- GPU memory optimization with efficient tensor handling
-- Graceful fallback to CPU when GPU is unavailable or initialization fails
-- Proper resource cleanup on shutdown to prevent memory leaks
-
-### Audio Processing Pipeline
-
-The optimized audio processing pipeline includes:
-
-1. Text preprocessing.
-2. Reference audio processing with caching for voice cloning.
-3. Voice synthesis using the CosyVoice model.
-4. Post-processing (normalization, validation).
-5. Format conversion to MP3 using FFmpeg.
-6. Streaming support with real-time MP3 encoding.
+- **`GET /config`**: Get current service configuration.
+  - **Response:** JSON object with current settings (e.g., default voice, available prompts).
 
 ## Configuration
 
-### Environment Variables
+Key configurations can be adjusted via environment variables (especially for Docker deployment) or directly in `api.py`:
 
-- `CUDA_VISIBLE_DEVICES`: GPU devices to use (e.g., "0,1" or "" for CPU-only).
-- `CUDA_DEVICE_ORDER`: Device ordering (default: "PCI_BUS_ID").
-- `CUDA_LAUNCH_BLOCKING`: CUDA error debugging (default: "1").
-- `PYTORCH_CUDA_ALLOC_CONF`: PyTorch CUDA memory allocation settings (default: "max_split_size_mb:512").
-- `RAY_ADDRESS`: Ray cluster address (default: "ray://localhost:6379").
-- `RAY_TEMP_DIR`: Ray temporary directory (default: "/tmp/ray").
+- `MAX_ONGOING_REQUESTS_PER_REPLICA`: Max concurrent requests a single replica handles.
+- `MAX_QUEUED_REQUESTS_DEPLOYMENT`: Max requests to queue at the deployment level.
+- `MIN_REPLICAS`, `INITIAL_REPLICAS`, `MAX_REPLICAS`: Control autoscaling behavior.
+- `TARGET_ONGOING_REQUESTS`: Target ongoing requests for autoscaling decisions.
+- `NUM_GPUS_PER_REPLICA`: Number of GPUs to assign per replica (e.g., 0 or 1).
+- `CUDA_VISIBLE_DEVICES`: Standard NVIDIA environment variable to control GPU visibility.
 
-### Project Structure
+Default voice prompts are defined in `VOICE_PROMPTS` in `api.py`. New `.wav` files can be added to the `asset/` directory and referenced there.
+
+## Project Structure
 
 ```
 cosyvoice-ray-serve-api/
-├── cosyvoice/
-│   ├── api.py          # Main API implementation
-│   ├── webui.py        # Web interface (optional)
-│   └── cosyvoice/      # Core CosyVoice implementation
-├── asset/              # Voice prompt files
-│   └── qwen.wav        # Default voice prompt
-├── logs/               # Log files
-├── tmp/                # Temporary files
-├── pretrained_models/  # Downloaded model files
-├── docs/               # Documentation
-│   ├── API.md          # API documentation
-│   └── DOCKER.md       # Docker implementation details
-├── Dockerfile          # Docker configuration
-├── requirements.txt    # Python dependencies
-└── README.md           # This file
+├── api.py                # Main Ray Serve application, API logic, and service class
+├── Dockerfile            # For building the Docker container
+├── requirements.txt      # Python dependencies
+├── README.md             # This file
+├── asset/                # Directory for voice prompt audio files (e.g., qwen.wav)
+│   └── qwen.wav
+├── cosyvoice/            # Submodule or copied source of the original CosyVoice project
+│   ├── bin/
+│   ├── cli/
+│   └── ... (other CosyVoice directories)
+├── pretrained_models/    # Directory where models are downloaded/stored
+│   └── CosyVoice2-0.5B/
+├── tmp/                  # Temporary file storage (created at runtime)
+└── logs/                 # Log file storage (created at runtime)
 ```
+
+## Development and Customization
+
+- **Adding Voice Prompts**: Place new `.wav` files in the `asset/` directory and update the `VOICE_PROMPTS` dictionary in `api.py`.
+- **Modifying Model Behavior**: Adjustments to the core TTS model (`CosyVoice2`) can be made within its source code in the `cosyvoice/` directory.
+- **Scaling Configuration**: Tweak autoscaling parameters in the `@serve.deployment` decorator in `api.py` to suit your load profile.
+
+## Logging and Monitoring
+
+- Logs are output to `stdout` (visible with `docker logs <container_id>`) and also saved to files in the `logs/` directory within the container (or locally if not using Docker).
+- The `/health` endpoint can be used for basic liveness and readiness checks in orchestration systems like Kubernetes.
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **GPU Memory Issues:**
-   - **Symptom:** Out of memory errors or CUDA errors.
-   - **Solution:** Adjust `PYTORCH_CUDA_ALLOC_CONF`, reduce batch size, or use CPU mode.
-2. **Ray Connection Issues:**
-   - **Symptom:** Cannot connect to Ray cluster or service fails to start.
-   - **Solution:** Ensure Ray is running (`ray status`), check `RAY_ADDRESS`, restart Ray cluster.
-3. **Audio Processing Errors:**
-   - **Symptom:** FFmpeg or Sox related errors.
-   - **Solution:** Verify system dependencies, check input audio format, ensure sufficient disk space.
-4. **Model Loading Errors:**
-   - **Symptom:** Model fails to load or initialize.
-   - **Solution:** Check internet connection, verify disk space, try CPU-only mode.
-5. **Streaming Issues:**
-   - **Symptom:** Audio streaming stops or produces corrupted audio.
-   - **Solution:** Check network stability, increase buffer size, verify client supports MP3 streaming.
-
-### Logs
-
-Check the following log files for troubleshooting:
-
-- Application logs: `logs/cosyvoice.log`
-- Ray dashboard: `http://localhost:8265`
-- Docker logs: `docker logs cosyvoice-api`
-
-## Documentation
-
-- [API Documentation](docs/API.md): Detailed technical documentation of the API implementation.
-- [Docker Documentation](docs/DOCKER.md): Information about the Docker implementation and deployment.
+- **Model Download Issues**: Ensure you have internet connectivity when running for the first time (or during Docker build if pre-downloading models). Check permissions for the `pretrained_models/` directory.
+- **FFmpeg/Sox Not Found**: Verify that these system dependencies are correctly installed and accessible in the system's PATH (or within the Docker container).
+- **CUDA Errors**:
+  - Ensure your NVIDIA drivers and CUDA toolkit version on the host are compatible with the PyTorch version used.
+  - If using Docker, confirm the NVIDIA Docker Toolkit is installed and working.
+  - Check `CUDA_VISIBLE_DEVICES` settings.
+- **Pynini Installation**: Pynini can be tricky. If `pip install -r requirements.txt` fails on Pynini, you might need to install it separately using Conda (as shown in local setup) or find a wheel/build method suitable for your OS/architecture. The Dockerfile attempts a standard pip install; if this fails, the Docker build process for Pynini might need adjustment.
 
 ## Contributing
 
-Contributions are welcome! Please follow these guidelines:
-
-1. Fork the repository.
-2. Create a new branch for your feature or bug fix.
-3. Make your changes and ensure they are well-documented and tested.
-4. Submit a pull request with a clear description of your changes.
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs, feature requests, or improvements. Ensure that your contributions align with the project's coding standards and include relevant tests or documentation updates.
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License. See the `LICENSE` file for details. The underlying CosyVoice project may have its own licensing terms, which should also be respected.
 
-## Acknowledgments
+## Acknowledgements
 
-- [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) for the core TTS models.
-- [Ray Project](https://ray.io/) for the serving framework.
-- [ModelScope](https://modelscope.cn/) for model hosting.
-- FFmpeg and Sox for audio processing.
+- The [FunAudioLLM team](https://github.com/FunAudioLLM) for creating and open-sourcing CosyVoice.
+- The [Ray Serve team](https://docs.ray.io/en/latest/serve/index.html) for the powerful serving framework.
