@@ -153,9 +153,11 @@ class TransformerLM(torch.nn.Module):
             decoded_tokens: List,
             sampling: int,
             ignore_eos: bool = True,
+            ignored_token_ids: Optional[List[int]] = None,
     ):
         if ignore_eos is True:
-            weighted_scores[self.speech_token_size] = -float('inf')
+            for token_id in ignored_token_ids or [self.eos_token]:
+                weighted_scores[token_id] = -float('inf')
         top_ids = self.sampling(weighted_scores, decoded_tokens, sampling)
         return top_ids
 
@@ -447,12 +449,12 @@ class Qwen2LM(TransformerLM):
         acc = th_accuracy(chosen_logits.view(-1, self.speech_token_size + 3), chosen_lm_target, ignore_label=IGNORE_ID)
 
         # 5. calculate dpo logits
-        chosen_lm_mask = chosen_lm_target == IGNORE_ID
-        rejected_lm_mask = rejected_lm_target == IGNORE_ID
-        chosen_logps = torch.gather(chosen_logits.log_softmax(dim=-1), dim=2, index=chosen_lm_target.masked_fill(chosen_lm_mask, 0).unsqueeze(dim=-1)).squeeze(dim=-1)
-        rejected_logps = torch.gather(rejected_logits.log_softmax(dim=-1), dim=2, index=rejected_lm_target.masked_fill(rejected_lm_mask, 0).unsqueeze(dim=-1)).squeeze(dim=-1)
-        chosen_logps = (chosen_logps * chosen_lm_mask).sum(dim=-1) / chosen_lm_mask.sum(dim=-1)
-        rejected_logps = (rejected_logps * rejected_lm_mask).sum(dim=-1) / rejected_lm_mask.sum(dim=-1)
+        chosen_lm_mask = chosen_lm_target != IGNORE_ID
+        rejected_lm_mask = rejected_lm_target != IGNORE_ID
+        chosen_logps = torch.gather(chosen_logits.log_softmax(dim=-1), dim=2, index=chosen_lm_target.masked_fill(~chosen_lm_mask, 0).unsqueeze(dim=-1)).squeeze(dim=-1)
+        rejected_logps = torch.gather(rejected_logits.log_softmax(dim=-1), dim=2, index=rejected_lm_target.masked_fill(~rejected_lm_mask, 0).unsqueeze(dim=-1)).squeeze(dim=-1)
+        chosen_logps = (chosen_logps * chosen_lm_mask).sum(dim=-1) / chosen_lm_mask.sum(dim=-1).clamp_min(1)
+        rejected_logps = (rejected_logps * rejected_lm_mask).sum(dim=-1) / rejected_lm_mask.sum(dim=-1).clamp_min(1)
         return {'loss': loss, 'acc': acc, 'chosen_logps': chosen_logps, 'rejected_logps': rejected_logps}
 
     @torch.inference_mode()
@@ -540,7 +542,11 @@ class Qwen2LM(TransformerLM):
                                                           masks=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool),
                                                           cache=cache)
                 logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
-                top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False)
+                top_ids = self.sampling_ids(logp.squeeze(dim=0),
+                                            out_tokens,
+                                            sampling,
+                                            ignore_eos=True if i < min_len else False,
+                                            ignored_token_ids=self.stop_token_ids)
                 if top_ids in self.stop_token_ids:
                     break
                 # in stream mode, yield token one by one

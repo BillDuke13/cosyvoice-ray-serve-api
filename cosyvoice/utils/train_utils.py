@@ -172,11 +172,11 @@ def init_optimizer_and_scheduler(args, configs, model, gan):
 
         if configs['train_conf']['scheduler_d'] == 'warmuplr':
             scheduler_type = WarmupLR
-            scheduler_d = WarmupLR(optimizer_d, **configs['train_conf']['scheduler_d'])
+            scheduler_d = WarmupLR(optimizer_d, **configs['train_conf']['scheduler_conf_d'])
         elif configs['train_conf']['scheduler_d'] == 'NoamHoldAnnealing':
             scheduler_type = NoamHoldAnnealing
-            scheduler_d = NoamHoldAnnealing(optimizer_d, **configs['train_conf']['scheduler_d'])
-        elif configs['train_conf']['scheduler'] == 'constantlr':
+            scheduler_d = NoamHoldAnnealing(optimizer_d, **configs['train_conf']['scheduler_conf_d'])
+        elif configs['train_conf']['scheduler_d'] == 'constantlr':
             scheduler_type = ConstantLR
             scheduler_d = ConstantLR(optimizer_d)
         else:

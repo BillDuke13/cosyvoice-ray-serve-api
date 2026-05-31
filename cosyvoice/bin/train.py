@@ -27,15 +27,6 @@ from hyperpyyaml import load_hyperpyyaml
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from cosyvoice.utils.losses import DPOLoss
-from cosyvoice.utils.executor import Executor
-from cosyvoice.utils.train_utils import (
-    init_distributed,
-    init_dataset_and_dataloader,
-    init_optimizer_and_scheduler,
-    init_summarywriter, save_model,
-    wrap_cuda_model, check_modify_and_save_config)
-
 
 def get_args():
     parser = argparse.ArgumentParser(description='training your network')
@@ -97,7 +88,20 @@ def get_args():
 @record
 def main():
     args = get_args()
-    os.environ['onnx_path'] = args.onnx_path
+    if args.onnx_path is not None:
+        os.environ['onnx_path'] = args.onnx_path
+    else:
+        os.environ.pop('onnx_path', None)
+
+    from cosyvoice.utils.losses import DPOLoss
+    from cosyvoice.utils.executor import Executor
+    from cosyvoice.utils.train_utils import (
+        init_distributed,
+        init_dataset_and_dataloader,
+        init_optimizer_and_scheduler,
+        init_summarywriter, save_model,
+        wrap_cuda_model, check_modify_and_save_config)
+
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
     # gan train has some special initialization logic
