@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Reference - CosyVoice Ray Serve API</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <nav class="top">
+        <a href="index.html">Overview</a>
+        <a href="api.html">API Reference</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="deployment.html">Deployment</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>API Reference</h1>
+    <p class="lead">
+      HTTP endpoints served by the Starlette app in <code>api.py</code>. The base URL is
+      <code>http://&lt;host&gt;:&lt;SERVE_PORT&gt;</code>; <code>SERVE_PORT</code> defaults to
+      <code>8000</code> for local runs and is <code>9998</code> in the Docker image.
+    </p>
+
+    <div class="note">
+      All four synthesis endpoints return an MP3 (<code>Content-Type: audio/mpeg</code>). Add
+      <code>"stream": true</code> for a chunked <code>audio/mpeg</code> response, and an optional
+      <code>speed</code> (float, <code>1.0</code> = normal). The corresponding
+      <code>CosyVoiceService</code> method in <code>api.py</code> is the source of truth for
+      request validation.
+    </div>
+
+    <h2>Synthesis endpoints</h2>
+
+    <h3><span class="method">POST</span> <span class="path">/tts</span> - standard TTS</h3>
+    <p>Synthesizes text with a built-in voice by cloning the bundled reference clip named by
+    <code>voice_type</code> via <code>inference_cross_lingual</code>.</p>
+    <p>Body: <code>application/json</code></p>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr>
+      <tr><td><code>text</code></td><td>string</td><td>yes</td><td>-</td><td>Text to synthesize</td></tr>
+      <tr><td><code>voice_type</code></td><td>string</td><td>no</td><td><code>qwen</code></td><td>Built-in voice key from <code>VOICE_PROMPTS</code>; unknown values fall back to the default</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor</td></tr>
+      <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>Stream the response in chunks</td></tr>
+    </table>
+    <pre><code>curl -X POST http://localhost:8000/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hello, world.", "voice_type": "qwen", "speed": 1.0}' \
+  --output out.mp3</code></pre>
+
+    <h3><span class="method">POST</span> <span class="path">/zero_shot_tts</span> - zero-shot cloning</h3>
+    <p>Clones a voice from an uploaded reference clip and its transcript
+    (<code>inference_zero_shot</code>). Plain <code>reference_text</code> is wrapped in the
+    CosyVoice3 prompt format if it does not already include
+    <code>&lt;|endofprompt|&gt;</code>.</p>
+    <p>Body: <code>multipart/form-data</code></p>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+      <tr><td><code>text</code></td><td>string</td><td>yes</td><td>Text to synthesize</td></tr>
+      <tr><td><code>reference_text</code></td><td>string</td><td>yes</td><td>Transcript of the reference clip</td></tr>
+      <tr><td><code>reference_audio</code></td><td>file</td><td>yes</td><td>Reference audio (WAV/MP3/...); normalized to 16&nbsp;kHz mono</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (default <code>1.0</code>)</td></tr>
+      <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>true</code> for streaming</td></tr>
+    </table>
+    <pre><code>curl -X POST http://localhost:8000/zero_shot_tts \
+  -F 'text=This voice is cloned.' \
+  -F 'reference_text=Transcript of the sample.' \
+  -F 'reference_audio=@sample.wav' \
+  --output out.mp3</code></pre>
+
+    <h3><span class="method">POST</span> <span class="path">/cross_lingual_tts</span> - cross-lingual cloning</h3>
+    <p>Clones a voice from an uploaded clip with no transcript; the target text may be in a
+    different language (<code>inference_cross_lingual</code>). Plain text is wrapped internally
+    with the required CosyVoice3 prompt marker.</p>
+    <p>Body: <code>multipart/form-data</code></p>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+      <tr><td><code>text</code></td><td>string</td><td>yes</td><td>Text to synthesize (any supported language)</td></tr>
+      <tr><td><code>reference_audio</code></td><td>file</td><td>yes</td><td>Reference audio; normalized to 16&nbsp;kHz mono</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (default <code>1.0</code>)</td></tr>
+      <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>true</code> for streaming</td></tr>
+    </table>
+    <pre><code>curl -X POST http://localhost:8000/cross_lingual_tts \
+  -F 'text=&#20320;&#22909;&#65292;&#19990;&#30028;&#12290;' \
+  -F 'reference_audio=@sample.wav' \
+  --output out.mp3</code></pre>
+
+    <h3><span class="method">POST</span> <span class="path">/instruct_tts</span> - instruction-controlled TTS</h3>
+    <p>Steers style, dialect, speed, or emotion with a natural-language instruction over a
+    built-in voice (<code>inference_instruct2</code>; the <code>voice_type</code> clip supplies
+    the timbre). If <code>instruction</code> does not include
+    <code>&lt;|endofprompt|&gt;</code>, the service wraps it as
+    <code>You are a helpful assistant. {instruction}&lt;|endofprompt|&gt;</code>.</p>
+    <p>Body: <code>application/json</code></p>
+    <table>
+      <tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr>
+      <tr><td><code>text</code></td><td>string</td><td>yes</td><td>-</td><td>Text to synthesize</td></tr>
+      <tr><td><code>instruction</code></td><td>string</td><td>yes</td><td>-</td><td>Natural-language instruction</td></tr>
+      <tr><td><code>voice_type</code></td><td>string</td><td>no</td><td><code>qwen</code></td><td>Built-in voice supplying the timbre</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor</td></tr>
+      <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>Stream the response in chunks</td></tr>
+    </table>
+    <pre><code>curl -X POST http://localhost:8000/instruct_tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Today is a wonderful day.", "instruction": "Speak cheerfully."}' \
+  --output out.mp3</code></pre>
+
+    <h2>Operational endpoints</h2>
+
+    <h3><span class="method">GET</span> <span class="path">/health</span></h3>
+    <p>Liveness/readiness check. Also reachable at
+    <span class="path">/v1/model/cosyvoice/healthcheck</span> (the Docker
+    <code>HEALTHCHECK</code> target). Returns <code>200</code> when the model is loaded,
+    otherwise <code>503</code>.</p>
+    <pre><code>{
+  "status": "healthy",
+  "timestamp": "2026-05-31T12:00:00+0000",
+  "device": "cuda:0",
+  "model_loaded": true,
+  "ray_actor_id": "...",
+  "ray_node_id": "..."
+}</code></pre>
+
+    <h3><span class="method">GET</span> <span class="path">/config</span></h3>
+    <p>Returns the active service configuration.</p>
+    <pre><code>{
+  "default_voice": "qwen",
+  "available_voice_prompts": ["qwen"],
+  "sample_rate": 24000,
+  "reference_audio_sample_rate": 16000,
+  "device_in_use": "cuda:0",
+  "model_directory": "/app/pretrained_models/Fun-CosyVoice3-0.5B",
+  "model_id": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+  "model_dir_name": "Fun-CosyVoice3-0.5B",
+  "model_revision": "main",
+  "model_family": "cosyvoice3",
+  "max_replicas_config": "2"
+}</code></pre>
+
+    <h2>Errors</h2>
+    <p>Errors are returned as JSON. Handled <code>HTTPException</code>s use their own status code
+    and <code>{"detail": "&lt;message&gt;"}</code>; unhandled server errors return
+    <code>500</code> with <code>{"detail": "Internal server error"}</code>.</p>
+    <table>
+      <tr><th>Status</th><th>When</th></tr>
+      <tr><td><code>400</code></td><td>Invalid JSON, missing/invalid fields, a non-numeric <code>speed</code>, or an unavailable voice prompt</td></tr>
+      <tr><td><code>500</code></td><td>Synthesis or audio-encoding failure</td></tr>
+      <tr><td><code>503</code></td><td><code>/health</code> when the model is not loaded</td></tr>
+    </table>
+
+    <div class="note">
+      CORS is enabled for all origins, methods, and headers (see the
+      <code>CORSMiddleware</code> configuration in <code>api.py</code>); restrict it before
+      exposing the service publicly.
+    </div>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      Documentation for the CosyVoice Ray Serve API. Licensed under Apache 2.0.
+    </div>
+  </footer>
+</body>
+</html>

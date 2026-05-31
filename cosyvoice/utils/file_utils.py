@@ -1,5 +1,6 @@
 # Copyright (c) 2021 Mobvoi Inc. (authors: Binbin Zhang)
 #               2024 Alibaba Inc (authors: Xiang Lyu, Zetao Hu)
+#               2025 Alibaba Inc (authors: Xiang Lyu, Yabin Li)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import json
+import torch
 import torchaudio
 import logging
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -38,11 +41,11 @@ def read_json_lists(list_file):
     return results
 
 
-def load_wav(wav, target_sr):
+def load_wav(wav, target_sr, min_sr=16000):
     speech, sample_rate = torchaudio.load(wav, backend='soundfile')
     speech = speech.mean(dim=0, keepdim=True)
     if sample_rate != target_sr:
-        assert sample_rate > target_sr, 'wav sample rate {} must be greater than {}'.format(sample_rate, target_sr)
+        assert sample_rate >= min_sr, 'wav sample rate {} must be greater than {}'.format(sample_rate, target_sr)
         speech = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=target_sr)(speech)
     return speech
 
@@ -56,7 +59,7 @@ def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, fp16):
     network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, logger)
     config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 31)  # 1GB
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 32)  # 4GB
     if fp16:
         config.set_flag(trt.BuilderFlag.FP16)
     profile = builder.create_optimization_profile()
@@ -83,3 +86,33 @@ def convert_onnx_to_trt(trt_model, trt_kwargs, onnx_model, fp16):
     with open(trt_model, "wb") as f:
         f.write(engine_bytes)
     logging.info("Succesfully convert onnx to trt...")
+
+
+# NOTE do not support bistream inference as only speech token embedding/head is kept
+def export_cosyvoice2_vllm(model, model_path, device):
+    if os.path.exists(model_path):
+        return
+
+    dtype = torch.bfloat16
+    # lm_head
+    use_bias = True if model.llm_decoder.bias is not None else False
+    model.llm.model.lm_head = model.llm_decoder
+    # embed_tokens
+    embed_tokens = model.llm.model.model.embed_tokens
+    model.llm.model.set_input_embeddings(model.speech_embedding)
+    model.llm.model.to(device)
+    model.llm.model.to(dtype)
+    tmp_vocab_size = model.llm.model.config.vocab_size
+    tmp_tie_embedding = model.llm.model.config.tie_word_embeddings
+    del model.llm.model.generation_config.eos_token_id
+    del model.llm.model.config.bos_token_id
+    del model.llm.model.config.eos_token_id
+    model.llm.model.config.vocab_size = model.speech_embedding.num_embeddings
+    model.llm.model.config.tie_word_embeddings = False
+    model.llm.model.config.use_bias = use_bias
+    model.llm.model.save_pretrained(model_path)
+    if use_bias is True:
+        os.system('sed -i s@Qwen2ForCausalLM@CosyVoice2ForCausalLM@g {}/config.json'.format(os.path.abspath(model_path)))
+    model.llm.model.config.vocab_size = tmp_vocab_size
+    model.llm.model.config.tie_word_embeddings = tmp_tie_embedding
+    model.llm.model.set_input_embeddings(embed_tokens)

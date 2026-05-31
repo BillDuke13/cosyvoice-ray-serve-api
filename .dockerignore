@@ -44,7 +44,9 @@ Thumbs.db
 
 # Project specific
 pretrained_models/
-asset/
+# Keep built-in voice prompts: /tts and /instruct_tts load asset/*.wav at runtime.
+# Stray root-level media is still excluded by the patterns below.
 *.wav
 *.mp3
 *.flac
+!asset/*.wav

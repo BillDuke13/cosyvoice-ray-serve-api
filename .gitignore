@@ -177,3 +177,6 @@ pretrained_models/
 logs/
 tmp/
 *.DS_Store
+
+# Local Claude Code instructions (personal, untracked)
+CLAUDE.local.md

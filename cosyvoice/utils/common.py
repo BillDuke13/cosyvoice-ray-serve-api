@@ -25,6 +25,33 @@ import torch
 
 IGNORE_ID = -1
 
+instruct_list = ["You are a helpful assistant. 请用广东话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用东北话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用甘肃话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用贵州话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用河南话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用湖北话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用湖南话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用江西话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用闽南话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用宁夏话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用山西话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用陕西话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用山东话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用上海话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用四川话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用天津话表达。<|endofprompt|>",
+                 "You are a helpful assistant. 请用云南话表达。<|endofprompt|>",
+                 "You are a helpful assistant. Please say a sentence as loudly as possible.<|endofprompt|>",
+                 "You are a helpful assistant. Please say a sentence in a very soft voice.<|endofprompt|>",
+                 "You are a helpful assistant. 请用尽可能慢地语速说一句话。<|endofprompt|>",
+                 "You are a helpful assistant. 请用尽可能快地语速说一句话。<|endofprompt|>",
+                 "You are a helpful assistant. 请非常开心地说一句话。<|endofprompt|>",
+                 "You are a helpful assistant. 请非常伤心地说一句话。<|endofprompt|>",
+                 "You are a helpful assistant. 请非常生气地说一句话。<|endofprompt|>",
+                 "You are a helpful assistant. 我想体验一下小猪佩奇风格，可以吗？<|endofprompt|>",
+                 "You are a helpful assistant. 你可以尝试用机器人的方式解答吗？<|endofprompt|>"]
+
 
 def pad_list(xs: List[torch.Tensor], pad_value: int):
     """Perform padding for the list of tensors.
@@ -112,6 +139,7 @@ def ras_sampling(weighted_scores, decoded_tokens, sampling, top_p=0.8, top_k=25,
     top_ids = nucleus_sampling(weighted_scores, top_p=top_p, top_k=top_k)
     rep_num = (torch.tensor(decoded_tokens[-win_size:]).to(weighted_scores.device) == top_ids).sum().item()
     if rep_num >= win_size * tau_r:
+        weighted_scores[top_ids] = -float('inf')
         top_ids = random_sampling(weighted_scores, decoded_tokens, sampling)
     return top_ids
 
@@ -130,12 +158,12 @@ def nucleus_sampling(weighted_scores, top_p=0.8, top_k=25):
             break
     prob = torch.tensor(prob).to(weighted_scores)
     indices = torch.tensor(indices, dtype=torch.long).to(weighted_scores.device)
-    top_ids = indices[prob.multinomial(1, replacement=True)]
+    top_ids = indices[prob.multinomial(1, replacement=True)].item()
     return top_ids
 
 
 def random_sampling(weighted_scores, decoded_tokens, sampling):
-    top_ids = weighted_scores.softmax(dim=0).multinomial(1, replacement=True)
+    top_ids = weighted_scores.softmax(dim=0).multinomial(1, replacement=True).item()
     return top_ids
 
 
@@ -169,17 +197,18 @@ def mask_to_bias(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
 
 
 class TrtContextWrapper:
-    def __init__(self, trt_engine, trt_concurrent=1):
-        self.trt_context_pool = queue.Queue()
+    def __init__(self, trt_engine, trt_concurrent=1, device='cuda:0'):
+        self.trt_context_pool = queue.Queue(maxsize=trt_concurrent)
         self.trt_engine = trt_engine
         for _ in range(trt_concurrent):
             trt_context = trt_engine.create_execution_context()
+            trt_stream = torch.cuda.stream(torch.cuda.Stream(device))
             assert trt_context is not None, 'failed to create trt context, maybe not enough CUDA memory, try reduce current trt concurrent {}'.format(trt_concurrent)
-            self.trt_context_pool.put(trt_context)
+            self.trt_context_pool.put([trt_context, trt_stream])
         assert self.trt_context_pool.empty() is False, 'no avaialbe estimator context'
 
     def acquire_estimator(self):
         return self.trt_context_pool.get(), self.trt_engine
 
-    def release_estimator(self, context):
-        self.trt_context_pool.put(context)
+    def release_estimator(self, context, stream):
+        self.trt_context_pool.put([context, stream])
