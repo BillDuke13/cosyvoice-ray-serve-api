@@ -34,6 +34,7 @@ adapts its ``AutoModel`` inference methods to HTTP.
 """
 
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -84,6 +85,8 @@ MODEL_DIR_NAME: str = os.environ.get("COSYVOICE_MODEL_DIR_NAME", "Fun-CosyVoice3
 MODEL_REVISION: str = os.environ.get("COSYVOICE_MODEL_REVISION", "main")
 END_OF_PROMPT: str = "<|endofprompt|>"
 COSYVOICE3_SYSTEM_PROMPT: str = "You are a helpful assistant."
+MIN_TTS_SPEED: float = 0.5
+MAX_TTS_SPEED: float = 2.0
 
 # --- Directory Setup ---
 # Determine project root and other important directories
@@ -129,6 +132,27 @@ def _format_cosyvoice3_instruction(instruction: str) -> str:
     if END_OF_PROMPT in instruction:
         return instruction
     return f"{COSYVOICE3_SYSTEM_PROMPT} {instruction}{END_OF_PROMPT}"
+
+
+def _parse_tts_speed(raw_speed: Any) -> float:
+    if isinstance(raw_speed, bool):
+        raise HTTPException(status_code=400, detail="'speed' must be a number.")
+
+    try:
+        speed = float(raw_speed)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'speed' must be a number.") from None
+
+    if not math.isfinite(speed):
+        raise HTTPException(status_code=400, detail="'speed' must be a finite number.")
+
+    if not MIN_TTS_SPEED <= speed <= MAX_TTS_SPEED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'speed' must be between {MIN_TTS_SPEED:g} and {MAX_TTS_SPEED:g}.",
+        )
+
+    return speed
 
 
 def _cosyvoice3_model_files_present(model_path: Path) -> bool:
@@ -1029,10 +1053,7 @@ class CosyVoiceService:
 
         voice_type = payload.get("voice_type", self.default_voice)
         stream = bool(payload.get("stream", False))
-        try:
-            speed = float(payload.get("speed", 1.0))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="'speed' must be a number.") from None
+        speed = _parse_tts_speed(payload.get("speed", 1.0))
 
         if voice_type not in self.voice_prompts:
             logger.warning(
@@ -1096,10 +1117,7 @@ class CosyVoiceService:
             reference_text = form_data.get("reference_text")  # Transcript of the reference audio
             reference_audio_file: UploadFile | None = form_data.get("reference_audio")
             stream = str(form_data.get("stream", "false")).lower() == "true"
-            try:
-                speed = float(form_data.get("speed", 1.0))
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="'speed' must be a number.") from None
+            speed = _parse_tts_speed(form_data.get("speed", 1.0))
 
             if not all([text, reference_text, reference_audio_file]):
                 missing_fields = [
@@ -1204,10 +1222,7 @@ class CosyVoiceService:
             text = form_data.get("text")
             reference_audio_file: UploadFile | None = form_data.get("reference_audio")
             stream = str(form_data.get("stream", "false")).lower() == "true"
-            try:
-                speed = float(form_data.get("speed", 1.0))
-            except (TypeError, ValueError):
-                raise HTTPException(status_code=400, detail="'speed' must be a number.") from None
+            speed = _parse_tts_speed(form_data.get("speed", 1.0))
 
             if not text or not reference_audio_file:
                 missing_fields = [
@@ -1315,10 +1330,7 @@ class CosyVoiceService:
 
         voice_type = payload.get("voice_type", self.default_voice)
         stream = bool(payload.get("stream", False))
-        try:
-            speed = float(payload.get("speed", 1.0))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="'speed' must be a number.") from None
+        speed = _parse_tts_speed(payload.get("speed", 1.0))
 
         if voice_type not in self.voice_prompts:
             logger.warning(
@@ -1483,7 +1495,7 @@ if __name__ == "__main__":
 # The HTTP proxy binds to SERVE_PORT (default 8000 locally; the Docker image sets 9998).
 #
 # To interact with the API (curl/Postman): all responses are MP3; add "stream": true for a
-# chunked audio/mpeg stream, and an optional "speed" (float, 1.0 = normal):
+# chunked audio/mpeg stream, and an optional "speed" (finite float, 0.5 to 2.0):
 # - Health:        GET  http://localhost:8000/health
 # - Config:        GET  http://localhost:8000/config
 # - Standard TTS:  POST http://localhost:8000/tts

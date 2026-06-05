@@ -28,8 +28,8 @@ The `cosyvoice/` package is vendored from upstream CosyVoice commit
   CosyVoice3's `<|endofprompt|>` marker where the model requires it.
 - **Streaming**. Pass `"stream": true` for a chunked `audio/mpeg` response on any synthesis
   endpoint.
-- **Adjustable speed**. Optional `speed` factor (float, `1.0` = normal) on every synthesis
-  endpoint.
+- **Adjustable speed**. Optional `speed` factor (finite float, `0.5` to `2.0`;
+  `1.0` = normal) on every synthesis endpoint.
 - **MP3 output**. 24 kHz model audio is encoded to MP3 via FFmpeg (LAME VBR).
 - **Scalability and reliability**. Ray Serve autoscaling, per-replica GPU assignment with CPU
   fallback, graceful shutdown, and health checks.
@@ -134,7 +134,7 @@ The API is then available at `http://localhost:9998`. The container `HEALTHCHECK
 ## API endpoints
 
 All synthesis endpoints return an MP3 (`audio/mpeg`). Add `"stream": true` for a chunked
-streaming response, and an optional `speed` (float, `1.0` = normal).
+streaming response, and an optional `speed` (finite float, `0.5` to `2.0`; `1.0` = normal).
 
 ### `POST /tts` -- standard TTS
 
@@ -156,7 +156,7 @@ required.
 | `text` | yes | Text to synthesize |
 | `reference_text` | yes | Transcript of the reference clip |
 | `reference_audio` | yes | Reference audio file (WAV/MP3/...) |
-| `speed` | no | Speed factor |
+| `speed` | no | Speed factor (`0.5` to `2.0`) |
 | `stream` | no | `true` for streaming |
 
 If `reference_text` does not include `<|endofprompt|>`, the service wraps it in the CosyVoice3
@@ -170,7 +170,7 @@ prompt format before inference.
 | --- | --- | --- |
 | `text` | yes | Text to synthesize (may be another language than the reference) |
 | `reference_audio` | yes | Reference audio file |
-| `speed` | no | Speed factor |
+| `speed` | no | Speed factor (`0.5` to `2.0`) |
 | `stream` | no | `true` for streaming |
 
 ### `POST /instruct_tts` -- instruction-controlled TTS

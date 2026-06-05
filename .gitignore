@@ -178,5 +178,5 @@ logs/
 tmp/
 *.DS_Store
 
-# Local Claude Code instructions (personal, untracked)
-CLAUDE.local.md
+# Local private notes
+*.local.md

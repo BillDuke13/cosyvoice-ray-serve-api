@@ -29,7 +29,8 @@
     <div class="note">
       All four synthesis endpoints return an MP3 (<code>Content-Type: audio/mpeg</code>). Add
       <code>"stream": true</code> for a chunked <code>audio/mpeg</code> response, and an optional
-      <code>speed</code> (float, <code>1.0</code> = normal). The corresponding
+      <code>speed</code> (finite float, <code>0.5</code> to <code>2.0</code>;
+      <code>1.0</code> = normal). The corresponding
       <code>CosyVoiceService</code> method in <code>api.py</code> is the source of truth for
       request validation.
     </div>
@@ -44,7 +45,7 @@
       <tr><th>Field</th><th>Type</th><th>Required</th><th>Default</th><th>Description</th></tr>
       <tr><td><code>text</code></td><td>string</td><td>yes</td><td>-</td><td>Text to synthesize</td></tr>
       <tr><td><code>voice_type</code></td><td>string</td><td>no</td><td><code>qwen</code></td><td>Built-in voice key from <code>VOICE_PROMPTS</code>; unknown values fall back to the default</td></tr>
-      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor (<code>0.5</code> to <code>2.0</code>)</td></tr>
       <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>Stream the response in chunks</td></tr>
     </table>
     <pre><code>curl -X POST http://localhost:8000/tts \
@@ -63,7 +64,7 @@
       <tr><td><code>text</code></td><td>string</td><td>yes</td><td>Text to synthesize</td></tr>
       <tr><td><code>reference_text</code></td><td>string</td><td>yes</td><td>Transcript of the reference clip</td></tr>
       <tr><td><code>reference_audio</code></td><td>file</td><td>yes</td><td>Reference audio (WAV/MP3/...); normalized to 16&nbsp;kHz mono</td></tr>
-      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (default <code>1.0</code>)</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (<code>0.5</code> to <code>2.0</code>; default <code>1.0</code>)</td></tr>
       <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>true</code> for streaming</td></tr>
     </table>
     <pre><code>curl -X POST http://localhost:8000/zero_shot_tts \
@@ -81,7 +82,7 @@
       <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
       <tr><td><code>text</code></td><td>string</td><td>yes</td><td>Text to synthesize (any supported language)</td></tr>
       <tr><td><code>reference_audio</code></td><td>file</td><td>yes</td><td>Reference audio; normalized to 16&nbsp;kHz mono</td></tr>
-      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (default <code>1.0</code>)</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td>Speech-rate factor (<code>0.5</code> to <code>2.0</code>; default <code>1.0</code>)</td></tr>
       <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>true</code> for streaming</td></tr>
     </table>
     <pre><code>curl -X POST http://localhost:8000/cross_lingual_tts \
@@ -101,7 +102,7 @@
       <tr><td><code>text</code></td><td>string</td><td>yes</td><td>-</td><td>Text to synthesize</td></tr>
       <tr><td><code>instruction</code></td><td>string</td><td>yes</td><td>-</td><td>Natural-language instruction</td></tr>
       <tr><td><code>voice_type</code></td><td>string</td><td>no</td><td><code>qwen</code></td><td>Built-in voice supplying the timbre</td></tr>
-      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor</td></tr>
+      <tr><td><code>speed</code></td><td>number</td><td>no</td><td><code>1.0</code></td><td>Speech-rate factor (<code>0.5</code> to <code>2.0</code>)</td></tr>
       <tr><td><code>stream</code></td><td>boolean</td><td>no</td><td><code>false</code></td><td>Stream the response in chunks</td></tr>
     </table>
     <pre><code>curl -X POST http://localhost:8000/instruct_tts \
@@ -147,7 +148,7 @@
     <code>500</code> with <code>{"detail": "Internal server error"}</code>.</p>
     <table>
       <tr><th>Status</th><th>When</th></tr>
-      <tr><td><code>400</code></td><td>Invalid JSON, missing/invalid fields, a non-numeric <code>speed</code>, or an unavailable voice prompt</td></tr>
+      <tr><td><code>400</code></td><td>Invalid JSON, missing/invalid fields, a non-finite or out-of-range <code>speed</code>, or an unavailable voice prompt</td></tr>
       <tr><td><code>500</code></td><td>Synthesis or audio-encoding failure</td></tr>
       <tr><td><code>503</code></td><td><code>/health</code> when the model is not loaded</td></tr>
     </table>
