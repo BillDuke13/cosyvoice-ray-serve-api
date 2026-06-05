@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CosyVoice Ray Serve API - Documentation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <nav class="top">
+        <a href="index.html">Overview</a>
+        <a href="api.html">API Reference</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="deployment.html">Deployment</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>CosyVoice Ray Serve API</h1>
+    <p class="lead">
+      An HTTP API that serves the CosyVoice3 text-to-speech model
+      (<code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code>) through Ray Serve, with autoscaling
+      replicas, automatic GPU detection, reference-audio caching, MP3 output, and optional
+      response streaming.
+    </p>
+
+    <p>
+      The whole service &mdash; the <code>CosyVoiceService</code> deployment, the
+      <code>AudioProcessor</code> helpers, the Starlette routing, and the
+      <code>cosyvoice_app</code> entry point &mdash; lives in a single module,
+      <code>api.py</code>. The <code>cosyvoice/</code> package is vendored from upstream
+      CosyVoice commit <code>074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc</code> and is treated as
+      read-only.
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h3><a href="api.html">API Reference</a></h3>
+        <p>Every HTTP endpoint: request shapes, parameters, responses, and <code>curl</code>
+        examples.</p>
+      </div>
+      <div class="card">
+        <h3><a href="architecture.html">Architecture</a></h3>
+        <p>Request lifecycle, the CosyVoice3 inference mapping, the audio pipeline, and Ray
+        Serve deployment internals.</p>
+      </div>
+      <div class="card">
+        <h3><a href="deployment.html">Deployment</a></h3>
+        <p>Running locally and with Docker, ports, health checks, scaling, and the full
+        environment-variable reference.</p>
+      </div>
+    </div>
+
+    <h2>Capabilities</h2>
+    <ul>
+      <li><strong>Standard TTS with a built-in voice</strong> &mdash; <code>/tts</code> clones a
+        bundled reference clip selected by <code>voice_type</code>.</li>
+      <li><strong>Zero-shot voice cloning</strong> &mdash; clone a voice from an uploaded
+        reference clip plus its transcript.</li>
+      <li><strong>Cross-lingual synthesis</strong> &mdash; clone from an uploaded clip with no
+        transcript; the target text may be in another language.</li>
+      <li><strong>Instruction-controlled synthesis</strong> &mdash; a natural-language
+        instruction steers style, dialect, speed, or emotion over a built-in voice.</li>
+      <li><strong>CosyVoice3 prompt compatibility</strong> &mdash; legacy client text is wrapped
+        internally with <code>&lt;|endofprompt|&gt;</code> where the model requires it.</li>
+      <li><strong>Streaming</strong> &mdash; pass <code>"stream": true</code> for a chunked
+        <code>audio/mpeg</code> response.</li>
+      <li><strong>Adjustable speed</strong> &mdash; optional finite <code>speed</code> factor
+        from <code>0.5</code> to <code>2.0</code> on every synthesis endpoint.</li>
+    </ul>
+
+    <h2>Quick start</h2>
+    <p>Install dependencies (Python 3.10; <code>pynini</code> from conda-forge first), then run
+    the service against a Ray cluster:</p>
+    <pre><code>conda create -n cosyvoice-api python=3.10 -y
+conda activate cosyvoice-api
+conda install -y -c conda-forge pynini==2.1.5
+pip install -r requirements.txt
+
+serve run api:cosyvoice_app        # or: python api.py (local single-node cluster)</code></pre>
+    <p>The model <code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code> auto-downloads from
+    ModelScope into <code>pretrained_models/Fun-CosyVoice3-0.5B/</code> on first startup. The
+    HTTP proxy binds to <code>SERVE_PORT</code> (default <code>8000</code> locally). Then
+    synthesize:</p>
+    <pre><code>curl -X POST http://localhost:8000/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hello, world.", "voice_type": "qwen"}' \
+  --output hello.mp3</code></pre>
+
+    <div class="note">
+      Audio sample rates are fixed and load-bearing: model output is <strong>24&nbsp;kHz</strong>
+      and reference/prompt audio is normalized to <strong>16&nbsp;kHz mono</strong>.
+    </div>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      Documentation for the CosyVoice Ray Serve API. Licensed under Apache 2.0.
+    </div>
+  </footer>
+</body>
+</html>

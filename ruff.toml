@@ -1,0 +1,20 @@
+# Ruff configuration for the CosyVoice Ray Serve API.
+# Formats and lints first-party code (api.py and other project-root modules).
+
+target-version = "py310"
+line-length = 100
+
+# Do not touch vendored upstream source or runtime artifacts.
+extend-exclude = [
+    "cosyvoice",
+    "pretrained_models",
+    "tmp",
+    "logs",
+]
+
+[lint]
+# Pyflakes (F), pycodestyle (E), isort (I), pyupgrade (UP), flake8-bugbear (B).
+select = ["E", "F", "I", "UP", "B"]
+
+[format]
+quote-style = "double"

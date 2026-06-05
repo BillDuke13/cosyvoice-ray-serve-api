@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture - CosyVoice Ray Serve API</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <nav class="top">
+        <a href="index.html">Overview</a>
+        <a href="api.html">API Reference</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="deployment.html">Deployment</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h1>Architecture</h1>
+    <p class="lead">
+      How a request becomes audio, how CosyVoice3 is driven, and how the Ray Serve deployment is
+      configured. Everything below lives in <code>api.py</code>; the <code>cosyvoice/</code>
+      package is the vendored upstream model source.
+    </p>
+
+    <h2>Module layout</h2>
+    <ul>
+      <li><strong><code>AudioProcessor</code></strong> - stateless helpers: normalize a
+        reference clip to 16&nbsp;kHz mono WAV (FFmpeg), normalize/validate audio tensors, and
+        encode a tensor to MP3 (torchaudio WAV to FFmpeg LAME).</li>
+      <li><strong><code>CosyVoiceService</code></strong> - the <code>@serve.deployment</code>
+        class: downloads and loads the model per replica, maps each endpoint to an
+        <code>AutoModel</code> inference method, and handles streaming/non-streaming
+        responses.</li>
+      <li><strong>Starlette <code>app</code> (<code>cosyvoice_app</code>)</strong> - routes,
+        exception handlers, and CORS. This is the object <code>serve run api:cosyvoice_app</code>
+        resolves.</li>
+    </ul>
+
+    <h2>Request lifecycle</h2>
+    <ol>
+      <li>An HTTP request hits a Starlette <code>Route</code>, which calls the bound deployment
+        method (for example, <code>tts_standard</code>).</li>
+      <li>The handler parses and validates input, resolves <code>voice_type</code>,
+        <code>speed</code>, and <code>stream</code>, prepares prompt audio, and adds the
+        CosyVoice3 <code>&lt;|endofprompt|&gt;</code> marker when legacy clients omit it.</li>
+      <li>It calls <code>_generate_audio_common(method_name, text, stream, **kwargs)</code>,
+        which looks up the model method and drives it with the same stream mode requested by the
+        client. Non-streaming requests keep model-level speed control active.</li>
+      <li>Each returned tensor is validated and peak-normalized. For a streaming response, every
+        chunk is encoded to MP3 and yielded as it is produced; otherwise chunks are concatenated
+        into one tensor and encoded once.</li>
+      <li>The handler returns a <code>StreamingResponse</code> or a buffered <code>Response</code>
+        with <code>media_type="audio/mpeg"</code>. Temporary files in <code>tmp/</code> are
+        cleaned up afterward.</li>
+    </ol>
+
+    <h2>Endpoint to model mapping</h2>
+    <table>
+      <tr><th>Endpoint</th><th>Model method</th><th>Key arguments</th><th>Prompt source</th></tr>
+      <tr><td><code>/tts</code></td><td><code>inference_cross_lingual</code></td><td><code>tts_text</code>, <code>prompt_wav</code>, <code>speed</code></td><td>Built-in voice clip (<code>voice_type</code>)</td></tr>
+      <tr><td><code>/zero_shot_tts</code></td><td><code>inference_zero_shot</code></td><td><code>tts_text</code>, <code>prompt_text</code>, <code>prompt_wav</code>, <code>speed</code></td><td>Uploaded clip + transcript</td></tr>
+      <tr><td><code>/cross_lingual_tts</code></td><td><code>inference_cross_lingual</code></td><td><code>tts_text</code>, <code>prompt_wav</code>, <code>speed</code></td><td>Uploaded clip</td></tr>
+      <tr><td><code>/instruct_tts</code></td><td><code>inference_instruct2</code></td><td><code>tts_text</code>, <code>instruct_text</code>, <code>prompt_wav</code>, <code>speed</code></td><td>Built-in voice clip (<code>voice_type</code>)</td></tr>
+    </table>
+    <div class="note">
+      <code>AutoModel</code> detects <code>cosyvoice3.yaml</code> in the local model directory and
+      constructs <code>CosyVoice3</code>. vLLM and TensorRT flags are left off by default so this
+      upgrade changes the model family without changing inference runtimes.
+    </div>
+
+    <h2>CosyVoice3 prompt handling</h2>
+    <ul>
+      <li><code>/tts</code> and <code>/cross_lingual_tts</code> wrap plain text as
+        <code>You are a helpful assistant.&lt;|endofprompt|&gt;{text}</code>.</li>
+      <li><code>/zero_shot_tts</code> wraps plain <code>reference_text</code> as
+        <code>You are a helpful assistant.&lt;|endofprompt|&gt;{reference_text}</code>.</li>
+      <li><code>/instruct_tts</code> wraps plain <code>instruction</code> as
+        <code>You are a helpful assistant. {instruction}&lt;|endofprompt|&gt;</code>.</li>
+      <li>Advanced clients may send prompts that already include
+        <code>&lt;|endofprompt|&gt;</code>; the service leaves those strings unchanged.</li>
+    </ul>
+
+    <h2>Audio pipeline</h2>
+    <p>Two sample rates are fixed and load-bearing:</p>
+    <table>
+      <tr><th>Constant</th><th>Value</th><th>Role</th></tr>
+      <tr><td><code>SAMPLE_RATE</code></td><td>24000</td><td>CosyVoice3 synthesis output rate</td></tr>
+      <tr><td><code>REFERENCE_AUDIO_SAMPLE_RATE</code></td><td>16000</td><td>Prompt/reference audio rate (mono)</td></tr>
+    </table>
+    <ul>
+      <li><strong>Reference normalization</strong> - uploaded and built-in clips are converted
+        to 16&nbsp;kHz mono WAV via FFmpeg (<code>process_reference_audio</code>). The normalized
+        path is passed to upstream CosyVoice, which loads the prompt audio as needed.</li>
+      <li><strong>MP3 encoding</strong> - output tensors are written to a temporary WAV with
+        torchaudio, then encoded to MP3 with FFmpeg's LAME encoder at VBR quality 2.</li>
+      <li><strong>Caching</strong> - processed reference clips are cached by path + mtime
+        (<code>_reference_audio_cache</code>); built-in voice prompt paths are cached by
+        <code>voice_type</code>.</li>
+      <li><strong>Temporary files</strong> - intermediate WAV/MP3 files live in
+        <code>tmp/</code> and are removed in <code>finally</code> blocks after each request.</li>
+    </ul>
+
+    <h2>Ray Serve deployment</h2>
+    <p>The <code>@serve.deployment</code> decorator (deployment name <code>CosyVoiceAPI</code>)
+    configures behavior from environment variables; see the
+    <a href="deployment.html">deployment guide</a> for the full list:</p>
+    <ul>
+      <li><strong>Autoscaling</strong> - <code>min</code>/<code>initial</code>/<code>max</code>
+        replicas and a target of concurrent requests per replica.</li>
+      <li><strong>Resources</strong> - <code>ray_actor_options={"num_gpus": 1}</code> when CUDA
+        is available and <code>NUM_GPUS_PER_REPLICA &gt; 0</code>; otherwise no GPU is
+        requested.</li>
+      <li><strong>Health and load shedding</strong> - health-check period/timeout, plus max
+        ongoing and max queued requests.</li>
+      <li><strong>Graceful shutdown</strong> - timeout and poll interval for draining in-flight
+        requests.</li>
+      <li><strong>Dynamic config</strong> - <code>user_config</code> seeds default voice, sample
+        rate, and model metadata; <code>reconfigure()</code> applies live updates such as a new
+        default voice.</li>
+    </ul>
+
+    <h3>Per-replica startup</h3>
+    <ol>
+      <li><code>_setup_device()</code> reads <code>ray.get_gpu_ids()</code> to pick
+        <code>cuda:&lt;id&gt;</code>, falling back to <code>cpu</code> when no GPU is
+        assigned.</li>
+      <li><code>_download_and_setup_models()</code> downloads
+        <code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code> from ModelScope into
+        <code>pretrained_models/Fun-CosyVoice3-0.5B/</code> if required files are absent, then
+        constructs <code>AutoModel(load_trt=False, load_vllm=False, fp16=&lt;on GPU&gt;)</code>.</li>
+      <li>If GPU initialization fails, the replica retries on CPU (without FP16) before giving
+        up.</li>
+      <li>An <code>atexit</code> handler releases the model, clears cached reference audio, and
+        clears the CUDA cache on shutdown.</li>
+    </ol>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      Documentation for the CosyVoice Ray Serve API. Licensed under Apache 2.0.
+    </div>
+  </footer>
+</body>
+</html>

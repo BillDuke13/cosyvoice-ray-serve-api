@@ -55,15 +55,20 @@ ENV RAY_DISABLE_DOCKER_CPU_WARNING=1 \
     RAY_SCHEDULER_EVENTS=0 \
     RAY_DEDUP_LOGS=0 \
     RAY_memory_monitor_refresh_ms=5000 \
-    RAY_memory_usage_threshold=0.85 \
+    RAY_memory_usage_threshold=0.90 \
+    RAY_serve_http_memory_ratio=0.15 \
+    RAY_serve_http_memory=1000000000 \
+    RAY_serve_http_max_concurrent_queries=200 \
     RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1 \
     RAY_enable_gpu_detection=1
 
-# Application configuration
+# Application configuration (names must match the env vars read in api.py)
 ENV SERVE_PORT=9998 \
-    REQUEST_TIMEOUT=300 \
-    MAX_ONGOING_REQUESTS=2 \
-    MAX_QUEUED_REQUESTS=10 \
+    COSYVOICE_MODEL_ID=FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+    COSYVOICE_MODEL_DIR_NAME=Fun-CosyVoice3-0.5B \
+    COSYVOICE_MODEL_REVISION=main \
+    MAX_ONGOING_REQUESTS_PER_REPLICA=2 \
+    MAX_QUEUED_REQUESTS_DEPLOYMENT=10 \
     MAX_REPLICAS=4
 
 # Create non-root user for security
@@ -110,7 +115,8 @@ RUN ln -sf /opt/conda/bin/python /usr/local/bin/python && \
     ln -sf /opt/conda/bin/python /usr/local/bin/python3 && \
     ln -sf /opt/conda/bin/pip /usr/local/bin/pip
 
-# Install pynini via conda (required by WeTextProcessing)
+# Install pynini via conda for text normalization dependencies that are not reliably
+# available as portable PyPI wheels across deployment targets.
 RUN conda install -y -c conda-forge pynini==2.1.5 && \
     conda clean -afy
 
@@ -278,8 +284,8 @@ RUN wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/downloa
     chmod +x /usr/local/bin/gosu && \
     gosu nobody true
 
-# Expose ports
-EXPOSE 9998 8265 6379
+# Expose ports (serve API, Ray dashboard, Ray GCS, Ray client)
+EXPOSE 9998 8265 6379 10001
 
 # Health check with more comprehensive testing
 HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
@@ -290,42 +296,3 @@ USER cosyvoice
 
 # Entry point
 ENTRYPOINT ["/app/start.sh"]
-
-RUN ln -sf /usr/bin/python3.10 /usr/local/bin/python3 && \
-    ln -sf /usr/bin/python3.10 /usr/local/bin/python && \
-    ln -sf /usr/bin/pip3 /usr/local/bin/pip
-
-RUN conda install -y -c conda-forge pynini==2.1.5 && \
-    conda clean -ay
-
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip cache purge
-
-RUN mkdir -p /app/tmp /app/logs /app/asset /tmp/cuda_cache && \
-    chmod 755 /app/tmp /app/logs /app/asset /tmp/cuda_cache
-
-COPY . .
-
-ENV RAY_DISABLE_DOCKER_CPU_WARNING=1 \
-    RAY_SCHEDULER_EVENTS=0 \
-    RAY_DEDUP_LOGS=0 \
-    RAY_memory_monitor_refresh_ms=5000 \
-    RAY_memory_usage_threshold=0.90 \
-    RAY_serve_http_memory_ratio=0.15 \
-    RAY_serve_http_memory=1000000000 \
-    RAY_serve_http_max_concurrent_queries=200 \
-    RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1 \
-    RAY_enable_gpu_detection=1
-
-EXPOSE 9998 8265 10001
-
-RUN printf '#!/bin/bash\nset -e\n\necho "Detecting GPUs..."\nnvidia-smi || echo "Warning: nvidia-smi not available"\n\nNUM_CPUS=$(nproc)\nNUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "0")\nMEMORY_GB=$(free -g | awk "/^Mem:/{print int(\\$2*0.8)}")\n\necho "System resources: CPUs=$NUM_CPUS, GPUs=$NUM_GPUS, Memory=${MEMORY_GB}GB"\n\necho "Starting Ray cluster..."\nray start --head \\\n  --port=6379 \\\n  --dashboard-host=0.0.0.0 \\\n  --dashboard-port=8265 \\\n  --num-cpus=$NUM_CPUS \\\n  --num-gpus=$NUM_GPUS \\\n  --memory=${MEMORY_GB}000000000 \\\n  --object-store-memory=${MEMORY_GB}000000000 \\\n  --plasma-directory=/tmp \\\n  --temp-dir=/app/tmp \\\n  --block &\n\necho "Waiting for Ray to be ready..."\nTIMEOUT=60\nCOUNTER=0\nwhile ! ray status >/dev/null 2>&1; do\n    if [ $COUNTER -ge $TIMEOUT ]; then\n        echo "Error: Ray failed to start within ${TIMEOUT} seconds"\n        exit 1\n    fi\n    echo "Waiting for Ray to start... ($COUNTER/$TIMEOUT)"\n    sleep 1\n    COUNTER=$((COUNTER + 1))\ndone\n\necho "Ray is ready!"\nray status\n\necho "Starting CosyVoice API server..."\nexec python api.py\n' > /app/start.sh && \
-    chmod +x /app/start.sh
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:9998/v1/model/cosyvoice/healthcheck || exit 1
-
-ENTRYPOINT ["/bin/bash", "/app/start.sh"]

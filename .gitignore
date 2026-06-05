@@ -177,3 +177,6 @@ pretrained_models/
 logs/
 tmp/
 *.DS_Store
+
+# Local private notes
+*.local.md
