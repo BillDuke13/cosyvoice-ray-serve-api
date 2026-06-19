@@ -25,9 +25,12 @@ dependencies = [
     "pydantic>=2.9,<3",            # FastAPI >=0.137 needs >=2.9; Ray supports v2
     "rich",
     "python-multipart",           # Starlette multipart parsing for upload endpoints (request.form())
-    # --- ML core (Blackwell: torch/torchaudio pinned to the cu130 index below) ---
-    "torch",
-    "torchaudio",
+    # --- ML core (Blackwell: torch/torchaudio from the cu130 index below) ---
+    # torch and torchaudio MUST share a minor version (torchaudio's C++ ops are built
+    # against a specific torch release). cu130 currently ships torchaudio only up to
+    # 2.11, so both are pinned to 2.11.* (still a CUDA 13 build -> Blackwell sm_120).
+    "torch==2.11.*",
+    "torchaudio==2.11.*",
     "numpy>=2",
     "scipy",
     "librosa>=0.11.0",            # >=0.11 is the first numpy-2-compatible release
