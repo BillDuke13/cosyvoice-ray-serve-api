@@ -73,14 +73,13 @@
     </ul>
 
     <h2>Quick start</h2>
-    <p>Install dependencies (Python 3.10; <code>pynini</code> from conda-forge first), then run
-    the service against a Ray cluster:</p>
-    <pre><code>conda create -n cosyvoice-api python=3.10 -y
-conda activate cosyvoice-api
-conda install -y -c conda-forge pynini==2.1.5
-pip install -r requirements.txt
+    <p>Install system packages and Python dependencies with uv, then run the service:</p>
+    <pre><code># Ubuntu/Debian system packages (ffmpeg, sox, libsndfile are required at runtime):
+sudo apt-get install -y ffmpeg sox libsox-fmt-all libsndfile1
+# Install the locked dependency tree (Python 3.10 managed automatically via .python-version):
+uv sync
 
-serve run api:cosyvoice_app        # or: python api.py (local single-node cluster)</code></pre>
+uv run serve run api:cosyvoice_app   # or: uv run python api.py (local single-node cluster)</code></pre>
     <p>The model <code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code> auto-downloads from
     ModelScope into <code>pretrained_models/Fun-CosyVoice3-0.5B/</code> on first startup. The
     HTTP proxy binds to <code>SERVE_PORT</code> (default <code>8000</code> locally). Then

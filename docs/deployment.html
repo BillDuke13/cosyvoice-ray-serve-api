@@ -27,48 +27,49 @@
 
     <h2>Prerequisites</h2>
     <ul>
-      <li><strong>Python 3.10</strong>.</li>
-      <li><strong>FFmpeg</strong> and <strong>Sox</strong> (<code>libsox-dev</code>) on
+      <li><strong>Python 3.10</strong> (pinned via <code>.python-version</code>; managed by uv
+        automatically).</li>
+      <li><strong><a href="https://docs.astral.sh/uv/">uv</a></strong> for dependency
+        management.</li>
+      <li><strong>FFmpeg</strong>, <strong>Sox</strong>, and <strong>libsndfile</strong> on
         <code>PATH</code>.</li>
-      <li><strong><code>pynini==2.1.5</code></strong> from conda-forge before
-        <code>pip install -r requirements.txt</code>; the Docker image installs it first.</li>
-      <li><strong>CUDA 12.1</strong> for GPU acceleration (wheels are pinned to cu121:
-        <code>torch==2.3.1</code>, <code>onnxruntime-gpu</code>, <code>tensorrt-cu12</code>). CPU
-        also works.</li>
+      <li><strong>CUDA 13.0</strong> for GPU acceleration (PyTorch wheels come from the
+        <code>cu130</code> index configured in <code>pyproject.toml</code>, supporting Turing
+        through Blackwell / RTX 50-series sm_120). CPU also works. Minimum NVIDIA driver:
+        <strong>580.65.06</strong>.</li>
       <li><strong>Model storage</strong> for approximately 10 GB under
         <code>pretrained_models/Fun-CosyVoice3-0.5B/</code>.</li>
     </ul>
 
     <h2>Local</h2>
-    <pre><code>conda create -n cosyvoice-api python=3.10 -y
-conda activate cosyvoice-api
-# Ubuntu/Debian system packages:
-sudo apt-get update &amp;&amp; sudo apt-get install -y ffmpeg sox libsox-fmt-all libsox-dev
-# Python dependencies:
-conda install -y -c conda-forge pynini==2.1.5
-pip install -r requirements.txt</code></pre>
+    <pre><code># Ubuntu/Debian system packages:
+sudo apt-get update &amp;&amp; sudo apt-get install -y ffmpeg sox libsox-fmt-all libsndfile1
+# Python dependencies (Python 3.10 is managed by uv via .python-version):
+uv sync</code></pre>
     <p>Then run the service one of two ways:</p>
     <table>
       <tr><th>Command</th><th>Behavior</th></tr>
-      <tr><td><code>serve run api:cosyvoice_app</code></td><td>Deploys against an existing Ray cluster (documented entry point)</td></tr>
-      <tr><td><code>python api.py</code></td><td>Starts a local single-node Ray cluster, then serves (the <code>__main__</code> block)</td></tr>
+      <tr><td><code>uv run serve run api:cosyvoice_app</code></td><td>Deploys against an existing Ray cluster (documented entry point)</td></tr>
+      <tr><td><code>uv run python api.py</code></td><td>Starts a local single-node Ray cluster, then serves (the <code>__main__</code> block)</td></tr>
     </table>
     <p>Both bind the HTTP proxy to <code>SERVE_PORT</code> (default <code>8000</code>). On first
     startup, <code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code> downloads from ModelScope into
     <code>pretrained_models/Fun-CosyVoice3-0.5B/</code>.</p>
 
     <h2>Docker</h2>
-    <p>The image is built on <code>nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04</code>, installs
-    audio and Python dependencies, runs as a non-root user, and on start brings up a Ray head node
-    before running <code>python api.py</code>. It sets <code>SERVE_PORT=9998</code> and CosyVoice3
-    model defaults.</p>
-    <pre><code>docker build -t cosyvoice-api:latest .
+    <p>The image uses a multi-stage uv build on
+    <code>nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04</code> (Blackwell / RTX 50-series
+    sm_120 support via PyTorch cu130 wheels). Dependencies are installed by uv in the builder
+    stage and copied into the runtime image. The container entrypoint is <code>start.sh</code>,
+    which starts a single-node Ray head node and then runs <code>python api.py</code> as a
+    non-root user. It sets <code>SERVE_PORT=9998</code> and CosyVoice3 model defaults.</p>
+    <pre><code>docker build -t cosyvoice-ray-serve-api .
 
 # CPU
-docker run -d -p 9998:9998 --name cosyvoice cosyvoice-api:latest
+docker run -d -p 9998:9998 --name cosyvoice cosyvoice-ray-serve-api
 
 # GPU (requires the NVIDIA Container Toolkit)
-docker run -d --gpus all -p 9998:9998 -p 8265:8265 --name cosyvoice cosyvoice-api:latest</code></pre>
+docker run -d --gpus all -p 9998:9998 -p 8265:8265 --name cosyvoice cosyvoice-ray-serve-api</code></pre>
     <p>Exposed ports: <code>9998</code> (API), <code>8265</code> (Ray dashboard),
     <code>6379</code> (Ray GCS), <code>10001</code> (Ray client). The container
     <code>HEALTHCHECK</code> curls
@@ -86,7 +87,7 @@ docker run -d --gpus all -p 9998:9998 -p 8265:8265 --name cosyvoice cosyvoice-ap
       <tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
       <tr><td><code>COSYVOICE_MODEL_ID</code></td><td><code>FunAudioLLM/Fun-CosyVoice3-0.5B-2512</code></td><td>ModelScope model ID</td></tr>
       <tr><td><code>COSYVOICE_MODEL_DIR_NAME</code></td><td><code>Fun-CosyVoice3-0.5B</code></td><td>Local directory under <code>pretrained_models/</code></td></tr>
-      <tr><td><code>COSYVOICE_MODEL_REVISION</code></td><td><code>main</code></td><td>Model revision passed to <code>snapshot_download</code></td></tr>
+      <tr><td><code>COSYVOICE_MODEL_REVISION</code></td><td><code>master</code></td><td>Model revision passed to <code>snapshot_download</code></td></tr>
       <tr><td><code>SERVE_PORT</code></td><td><code>8000</code> (Docker <code>9998</code>)</td><td>HTTP proxy bind port (used by <code>python api.py</code>)</td></tr>
       <tr><td><code>MIN_REPLICAS</code></td><td><code>1</code></td><td>Autoscaling lower bound</td></tr>
       <tr><td><code>INITIAL_REPLICAS</code></td><td><code>1</code></td><td>Replicas at startup</td></tr>

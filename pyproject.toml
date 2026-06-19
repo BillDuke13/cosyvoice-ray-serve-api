@@ -1,0 +1,93 @@
+# Project metadata + uv configuration for the CosyVoice3 Ray Serve API.
+#
+# This is an application (not a library): `tool.uv.package = false` so uv installs
+# the dependency tree into the project venv but does not try to build/install the
+# repo itself. The service is run with `python api.py` or `serve run api:cosyvoice_app`.
+#
+# The vendored `cosyvoice/` package is upstream CosyVoice (read-only). The core
+# dependency set is everything needed for default inference (load_trt=False,
+# load_vllm=False) plus the Ray Serve HTTP layer. Training/export, TensorRT and
+# vLLM acceleration are isolated into optional groups so they do not bloat or
+# break the runtime image (notably tensorrt-cu12 is CUDA-12 only).
+
+[project]
+name = "cosyvoice-ray-serve-api"
+version = "0.2.0"
+description = "HTTP API serving the CosyVoice3 TTS model through Ray Serve."
+readme = "README.md"
+requires-python = "==3.10.*"
+
+dependencies = [
+    # --- Ray Serve HTTP layer ---
+    "ray[serve]",
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2.9,<3",            # FastAPI >=0.137 needs >=2.9; Ray supports v2
+    "rich",
+    # --- ML core (Blackwell: torch/torchaudio pinned to the cu130 index below) ---
+    "torch",
+    "torchaudio",
+    "numpy>=2",
+    "scipy",
+    "librosa>=0.11.0",            # >=0.11 is the first numpy-2-compatible release
+    "soundfile",                  # WAV writer for api.py (replaces torchaudio.save)
+    "transformers",               # NOTE: 5.x may garble CV3 audio (upstream #1886);
+                                  # fall back to latest 4.x if the audio gate fails.
+    "diffusers",
+    "x-transformers",
+    "matcha-tts",
+    "hyperpyyaml",
+    "omegaconf",
+    "hydra-core",
+    "conformer",
+    "inflect",
+    "wetext",                     # CV3 default text-normalization path (no pynini)
+    "openai-whisper",
+    "onnx",
+    "modelscope",
+    # ONNX runtime: GPU build on Linux, CPU build elsewhere.
+    "onnxruntime-gpu; sys_platform == 'linux'",
+    "onnxruntime; sys_platform == 'darwin' or sys_platform == 'win32'",
+    # --- Direct imports of the vendored package that were previously only pulled
+    #     in transitively; pin them explicitly so a clean resolve cannot drop them.
+    "einops",
+    "tiktoken",
+    "tqdm",
+    "packaging",
+]
+
+# This pyproject declares ONLY the runtime dependencies of the inference service.
+# Auxiliary dependency sets are intentionally NOT declared here: pinning them would
+# drag the unified resolution down (the upstream Gradio demo, for example, forces
+# numpy < 2 and an ancient Gradio), and none are used by api.py. Install them
+# separately when needed:
+#   - Training / data-prep / export (deepspeed, lightning, tensorboard, pyworld,
+#     matplotlib, gdown, wget, pyarrow): use upstream CosyVoice's requirements.
+#   - Gradio web demo (gradio): upstream demo only.
+#   - TensorRT acceleration (load_trt=True): install a build matching the runtime
+#     CUDA major, e.g. `uv pip install tensorrt-cu13`.
+#   - vLLM acceleration (load_vllm=True): install in a dedicated env per upstream,
+#     e.g. `uv pip install "vllm==0.11.*"`.
+
+[tool.uv]
+package = false
+
+# matcha-tts 0.0.7.2 declares a bloated dependency set (gradio, optuna, seaborn,
+# lightning, hydra-*, wandb, ...) for its own training/demo CLI. The vendored
+# cosyvoice/ code only imports matcha.models.components.* and matcha.hifigan.models,
+# which need just torch + einops (already in core). Override the metadata so uv does
+# not drag in that ancient, unused tree (it otherwise pins numpy < 2 and gradio 3.x).
+[[tool.uv.dependency-metadata]]
+name = "matcha-tts"
+version = "0.0.7.2"
+requires-dist = ["torch", "einops", "numpy"]
+
+# PyTorch CUDA 13.0 wheel index (supports Turing -> Blackwell / RTX 50 sm_120).
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
