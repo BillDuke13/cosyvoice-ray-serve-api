@@ -37,11 +37,11 @@ The `cosyvoice/` package is vendored from upstream CosyVoice commit
 ## Requirements
 
 - **Python 3.10**
-- **FFmpeg** and **Sox** (`libsox-dev`) for audio I/O and format conversion.
-- **`pynini==2.1.5`** from conda-forge is recommended for local Conda installs before
-  `pip install -r requirements.txt`; the Docker image installs it first.
-- **GPU (optional, recommended)**. Wheels are pinned to **CUDA 12.1** (`torch==2.3.1` via the
-  cu121 index, `onnxruntime-gpu`, `tensorrt-cu12`). The service also runs on CPU.
+- **[uv](https://docs.astral.sh/uv/)** for dependency management (`pyproject.toml` + `uv.lock`).
+- **FFmpeg**, **Sox**, and **libsndfile** for audio I/O and format conversion.
+- **GPU (optional, recommended)**. PyTorch wheels come from the **CUDA 13.0** (`cu130`) index
+  (configured in `pyproject.toml`), supporting Turing through Blackwell / RTX 50-series
+  (sm_120). The service also runs on CPU. Minimum NVIDIA driver: **580.65.06** for CUDA 13.
 
 ## Installation
 
@@ -54,47 +54,42 @@ The `cosyvoice/` package is vendored from upstream CosyVoice commit
    cd cosyvoice-ray-serve-api
    ```
 
-2. **Create a Conda environment:**
-
-   ```bash
-   conda create -n cosyvoice-api python=3.10 -y
-   conda activate cosyvoice-api
-   ```
-
-3. **Install system dependencies:**
+2. **Install system dependencies:**
 
    Ubuntu/Debian:
 
    ```bash
    sudo apt-get update
-   sudo apt-get install -y ffmpeg sox libsox-fmt-all libsox-dev
+   sudo apt-get install -y ffmpeg sox libsox-fmt-all libsndfile1
    ```
 
    macOS (Homebrew):
 
    ```bash
-   brew install ffmpeg sox
+   brew install ffmpeg sox libsndfile
    ```
 
-4. **Install Python dependencies:**
+3. **Install Python dependencies:**
 
    ```bash
-   conda install -y -c conda-forge pynini==2.1.5
-   pip install -r requirements.txt
+   uv sync
    ```
 
-5. **Model download.** On first startup, `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` downloads
+   This creates `.venv/` and installs the exact dependency tree from `uv.lock`. Python 3.10
+   is pinned via `.python-version` and managed by uv automatically.
+
+4. **Model download.** On first startup, `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` downloads
    from ModelScope into `pretrained_models/Fun-CosyVoice3-0.5B/` (gitignored; requires
    network and about 10 GB of model files).
 
 ### Option 2: Docker
 
 ```bash
-docker build -t cosyvoice-api:latest .
+docker build -t cosyvoice-ray-serve-api .
 ```
 
-The image is built on `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`, installs the audio and
-Python dependencies, and runs as a non-root user.
+The image uses a multi-stage uv build on `nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04`,
+installs the audio and Python dependencies, and runs as a non-root user.
 
 ## Running
 
@@ -103,13 +98,13 @@ Python dependencies, and runs as a non-root user.
 Against an existing Ray cluster:
 
 ```bash
-serve run api:cosyvoice_app
+uv run serve run api:cosyvoice_app
 ```
 
 Or start a local single-node Ray cluster directly:
 
 ```bash
-python api.py
+uv run python api.py
 ```
 
 Both bind the HTTP proxy to `SERVE_PORT` (`8000` by default for local runs). The API is then
@@ -122,10 +117,10 @@ The image sets `SERVE_PORT=9998`, so publish that port (and optionally the Ray d
 
 ```bash
 # CPU
-docker run -d -p 9998:9998 --name cosyvoice cosyvoice-api:latest
+docker run -d -p 9998:9998 --name cosyvoice cosyvoice-ray-serve-api
 
 # GPU (requires the NVIDIA Container Toolkit)
-docker run -d --gpus all -p 9998:9998 -p 8265:8265 --name cosyvoice cosyvoice-api:latest
+docker run -d --gpus all -p 9998:9998 -p 8265:8265 --name cosyvoice cosyvoice-ray-serve-api
 ```
 
 The API is then available at `http://localhost:9998`. The container `HEALTHCHECK` curls
@@ -212,7 +207,7 @@ and `reconfigure()` in `api.py`; there is no config file.
 | --- | --- | --- |
 | `COSYVOICE_MODEL_ID` | `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` | ModelScope model ID |
 | `COSYVOICE_MODEL_DIR_NAME` | `Fun-CosyVoice3-0.5B` | Local directory under `pretrained_models/` |
-| `COSYVOICE_MODEL_REVISION` | `main` | Model revision passed to `snapshot_download` |
+| `COSYVOICE_MODEL_REVISION` | `master` | Model revision passed to `snapshot_download` |
 | `SERVE_PORT` | `8000` (Docker: `9998`) | HTTP proxy bind port (used by `python api.py`) |
 | `MIN_REPLICAS` | `1` | Autoscaling lower bound |
 | `INITIAL_REPLICAS` | `1` | Replicas at startup |
@@ -240,8 +235,11 @@ reference/prompt audio is normalized to 16 kHz mono.
 ```text
 cosyvoice-ray-serve-api/
 ├── api.py             # Ray Serve app: service, audio processing, routing, entry point
-├── Dockerfile         # CUDA 12.1 runtime image
-├── requirements.txt   # Python dependencies (CUDA 12.1 wheels)
+├── Dockerfile         # Multi-stage uv build on CUDA 13.0 (nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04)
+├── start.sh           # Container entrypoint: starts Ray cluster then launches the Serve app
+├── pyproject.toml     # Project metadata and uv dependency configuration
+├── uv.lock            # Locked dependency tree (source of truth for all Python deps)
+├── .python-version    # Pins Python 3.10 for uv
 ├── ruff.toml          # Format/lint config (target py310; excludes cosyvoice/)
 ├── asset/             # Built-in voice prompt clips (e.g. qwen.wav)
 ├── cosyvoice/         # Vendored upstream CosyVoice source (read-only)
@@ -274,13 +272,14 @@ files and can be slow on first startup.
 
 - **Model download fails** -- ensure network access on first run and write permission for
   `pretrained_models/`.
-- **FFmpeg/Sox not found** -- confirm both are installed and on `PATH` or present in the
-  container.
-- **CUDA errors** -- verify host NVIDIA drivers are compatible with CUDA 12.1; with Docker,
-  confirm the NVIDIA Container Toolkit is installed; check `CUDA_VISIBLE_DEVICES`. The service
-  falls back to CPU if GPU initialization fails.
-- **`pynini` install fails** -- install it from conda-forge (`conda install -c conda-forge
-  pynini==2.1.5`) before `pip install -r requirements.txt`.
+- **FFmpeg/Sox/libsndfile not found** -- confirm all three are installed and on `PATH` or present
+  in the container.
+- **CUDA errors** -- verify host NVIDIA drivers are >= 580.65.06 (required for CUDA 13); with
+  Docker, confirm the NVIDIA Container Toolkit is installed; check `CUDA_VISIBLE_DEVICES`. The
+  service falls back to CPU if GPU initialization fails.
+- **`uv sync` fails** -- ensure uv is installed (`pip install uv` or see
+  [docs.astral.sh/uv](https://docs.astral.sh/uv/)) and that the system packages above are
+  present before syncing.
 
 ## License
 

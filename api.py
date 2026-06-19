@@ -4,7 +4,7 @@ CosyVoice Ray Serve API
 An HTTP API that serves the CosyVoice3 text-to-speech model
 (``FunAudioLLM/Fun-CosyVoice3-0.5B-2512``)
 through Ray Serve. The whole service -- the ``CosyVoiceService`` deployment, the
-``AudioProcessor`` helpers, the Starlette routing, and the ``cosyvoice_app`` entry
+``AudioProcessor`` helpers, the FastAPI ingress routing, and the ``cosyvoice_app`` entry
 point -- lives in this single module.
 
 Capabilities exposed over HTTP (all responses are MP3; pass ``"stream": true`` for a
@@ -52,17 +52,16 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Set to '1' for debugging CUDA errors
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 import ray
+import soundfile as sf
 import torch
-import torchaudio
+from fastapi import FastAPI
 from modelscope import snapshot_download  # For downloading pre-trained models
 from ray import serve
-from starlette.applications import Starlette
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware  # For enabling CORS
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
 
 # Assuming CosyVoice modules are structured as per the original project
 from cosyvoice.cli.cosyvoice import AutoModel
@@ -82,7 +81,8 @@ REFERENCE_AUDIO_SAMPLE_RATE: int = 16000  # Prompt/reference audio is normalized
 MODEL_FAMILY: str = "cosyvoice3"
 MODEL_ID: str = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 MODEL_DIR_NAME: str = os.environ.get("COSYVOICE_MODEL_DIR_NAME", "Fun-CosyVoice3-0.5B")
-MODEL_REVISION: str = os.environ.get("COSYVOICE_MODEL_REVISION", "main")
+# "master" is ModelScope's default branch for this model (not "main").
+MODEL_REVISION: str = os.environ.get("COSYVOICE_MODEL_REVISION", "master")
 END_OF_PROMPT: str = "<|endofprompt|>"
 COSYVOICE3_SYSTEM_PROMPT: str = "You are a helpful assistant."
 MIN_TTS_SPEED: float = 0.5
@@ -354,22 +354,16 @@ class AudioProcessor:
         temp_wav_path = TMP_DIR / f"temp_audio_{timestamp}.wav"
 
         try:
-            # Ensure audio tensor is on CPU and in the correct format for torchaudio.save
-            # Expected shape: [channels, samples] or [samples]
-            if audio_tensor.is_cuda:
-                audio_tensor = audio_tensor.cpu()
-            if (
-                audio_tensor.dim() == 1
-            ):  # Add channel dimension if it's mono [samples] -> [1, samples]
-                audio_tensor = audio_tensor.unsqueeze(0)
+            # soundfile writes CPU numpy in (frames,) / (frames, channels) layout --
+            # the transpose of torchaudio's (channels, frames). The model output is
+            # already normalized to [-1, 1] float; subtype="PCM_16" yields signed 16-bit
+            # PCM. (torchaudio.save ignores encoding/bits_per_sample under the TorchCodec
+            # backend in torchaudio >= 2.9, so soundfile is used for a stable WAV format.)
+            audio_np = audio_tensor.detach().cpu().float().numpy()
+            if audio_np.ndim > 1:
+                audio_np = audio_np.T  # (channels, samples) -> (samples, channels)
 
-            torchaudio.save(
-                str(temp_wav_path),
-                audio_tensor,
-                sample_rate,
-                encoding="PCM_S",  # Signed 16-bit PCM
-                bits_per_sample=16,
-            )
+            sf.write(str(temp_wav_path), audio_np, sample_rate, subtype="PCM_16")
             logger.info(f"Temporary WAV file saved: {temp_wav_path}")
 
             # Convert WAV to MP3 using FFmpeg
@@ -411,10 +405,10 @@ class AudioProcessor:
                 )
 
             return output_mp3_path
-        except (RuntimeError, OSError) as e_torch:
-            # torchaudio.save raises RuntimeError/OSError on encode or I/O failure.
-            logger.error(f"Torchaudio failed to save temporary WAV file: {e_torch}")
-            raise Exception("Audio saving failed (torchaudio error).") from e_torch
+        except (RuntimeError, OSError) as e_sf:
+            # soundfile.write raises LibsndfileError (a RuntimeError subclass) / OSError.
+            logger.error(f"soundfile failed to save temporary WAV file: {e_sf}")
+            raise Exception("Audio saving failed (soundfile error).") from e_sf
         except subprocess.CalledProcessError as e_ffmpeg:
             logger.error(f"FFmpeg MP3 conversion failed. Error: {e_ffmpeg.stderr}")
             raise Exception("Audio conversion to MP3 failed (ffmpeg error).") from e_ffmpeg
@@ -429,6 +423,21 @@ class AudioProcessor:
                     logger.debug(f"Deleted temporary WAV file: {temp_wav_path}")
                 except OSError as e_os:
                     logger.warning(f"Failed to delete temporary WAV file {temp_wav_path}: {e_os}")
+
+
+# --- HTTP ingress ---
+# FastAPI app used as the Ray Serve ingress. Routes are declared on the
+# CosyVoiceService methods below with @fastapi_app decorators. Ray Serve 2.x no
+# longer supports binding deployment methods as Starlette routes directly, so the
+# service is exposed via @serve.ingress(fastapi_app).
+fastapi_app = FastAPI(title="CosyVoice Ray Serve API")
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins. For production, specify allowed domains.
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all HTTP methods.
+    allow_headers=["*"],  # Allows all headers.
+)
 
 
 # --- Ray Serve Deployment Configuration ---
@@ -447,9 +456,11 @@ class AudioProcessor:
         "target_ongoing_requests": int(
             os.environ.get("TARGET_ONGOING_REQUESTS", "2")
         ),  # Target concurrent requests per replica
-        "metrics_interval_s": 10.0,  # How often to scrape metrics
         "look_back_period_s": 30.0,  # Time window for averaging metrics
-        "smoothing_factor": 1.0,  # Controls responsiveness of autoscaling (1.0 = no smoothing)
+        # Ray split smoothing_factor into separate up/down factors; metrics_interval_s
+        # is deprecated in recent Ray Serve, so it is no longer set here.
+        "upscaling_factor": 1.0,  # Responsiveness when scaling up (1.0 = no smoothing)
+        "downscaling_factor": 1.0,  # Responsiveness when scaling down
         # "downscale_delay_s": 600.0, # Delay before scaling down
         # "upscale_delay_s": 30.0,    # Delay before scaling up
     },
@@ -490,6 +501,7 @@ class AudioProcessor:
         "model_family": MODEL_FAMILY,
     },
 )
+@serve.ingress(fastapi_app)
 class CosyVoiceService:
     """
     Ray Serve service class for CosyVoice TTS.
@@ -981,6 +993,8 @@ class CosyVoiceService:
 
     # --- API Endpoint Handlers ---
 
+    @fastapi_app.get("/health")
+    @fastapi_app.get("/v1/model/cosyvoice/healthcheck")
     async def health_check(self, request: Request) -> JSONResponse:
         """
         Basic health check endpoint.
@@ -1010,6 +1024,7 @@ class CosyVoiceService:
             }
         )
 
+    @fastapi_app.get("/config")
     async def get_config(self, request: Request) -> JSONResponse:
         """
         Returns the current configuration of the service.
@@ -1033,6 +1048,7 @@ class CosyVoiceService:
             }
         )
 
+    @fastapi_app.post("/tts")
     async def tts_standard(self, request: Request) -> Response:
         """
         Handles standard Text-to-Speech requests.
@@ -1104,6 +1120,7 @@ class CosyVoiceService:
             logger.error(f"TTS Standard request failed: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"TTS generation error: {str(e)}") from e
 
+    @fastapi_app.post("/zero_shot_tts")
     async def tts_zero_shot(self, request: Request) -> Response:
         """
         Handles Zero-Shot Text-to-Speech requests for voice cloning.
@@ -1211,6 +1228,7 @@ class CosyVoiceService:
                 status_code=500, detail=f"Zero-shot TTS generation error: {str(e)}"
             ) from e
 
+    @fastapi_app.post("/cross_lingual_tts")
     async def tts_cross_lingual(self, request: Request) -> Response:
         """
         Handles Cross-Lingual Text-to-Speech requests.
@@ -1300,6 +1318,7 @@ class CosyVoiceService:
                 status_code=500, detail=f"Cross-lingual TTS generation error: {str(e)}"
             ) from e
 
+    @fastapi_app.post("/instruct_tts")
     async def tts_instruct(self, request: Request) -> Response:
         """
         Handles instruction-based Text-to-Speech requests.
@@ -1397,53 +1416,11 @@ class CosyVoiceService:
 
 
 # --- Ray Serve Application Binding ---
-# Bind the deployment to obtain a handle, then expose it over HTTP through a Starlette app
-# whose routes call the deployment's methods. `serve run api:cosyvoice_app` and the __main__
-# block below both resolve the module-level `cosyvoice_app` defined further down.
-
-# Bind the deployment. This creates a handle used to dispatch requests to replicas.
-cosyvoice_deployment = CosyVoiceService.options(
-    # Pass any specific options for this binding if different from the class-level decorator.
-).bind()
-
-
-# Create a Starlette application to manage routes and middleware
-# This application will be the main entry point for HTTP requests.
-app = Starlette(
-    routes=[
-        Route("/tts", cosyvoice_deployment.tts_standard, methods=["POST"]),
-        Route("/zero_shot_tts", cosyvoice_deployment.tts_zero_shot, methods=["POST"]),
-        Route("/cross_lingual_tts", cosyvoice_deployment.tts_cross_lingual, methods=["POST"]),
-        Route("/instruct_tts", cosyvoice_deployment.tts_instruct, methods=["POST"]),
-        Route("/health", cosyvoice_deployment.health_check, methods=["GET"]),
-        Route(
-            "/v1/model/cosyvoice/healthcheck", cosyvoice_deployment.health_check, methods=["GET"]
-        ),
-        Route("/config", cosyvoice_deployment.get_config, methods=["GET"]),
-    ],
-    # Add exception handlers for cleaner error responses
-    exception_handlers={
-        HTTPException: lambda req, exc: JSONResponse(
-            {"detail": exc.detail}, status_code=exc.status_code
-        ),
-        500: lambda req, exc: JSONResponse({"detail": "Internal server error"}, status_code=500),
-    },
-)
-
-# Add CORS (Cross-Origin Resource Sharing) middleware
-# This allows web applications from different domains to access the API.
-# Configure origins as needed for your environment.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins. For production, specify allowed domains.
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all HTTP methods.
-    allow_headers=["*"],  # Allows all headers.
-)
-
-# This 'cosyvoice_app' is what `serve run api:cosyvoice_app` will look for.
-# It's the entry point for Ray Serve.
-cosyvoice_app = app
+# CosyVoiceService is decorated with @serve.ingress(fastapi_app), so binding it yields
+# the HTTP application Ray Serve exposes (routes and CORS are declared on the deployment
+# methods above). Both `serve run api:cosyvoice_app` and the __main__ block below resolve
+# this module-level `cosyvoice_app`.
+cosyvoice_app = CosyVoiceService.bind()
 
 # --- Main block for local testing (optional) ---
 # This allows running the script directly with `python api.py` for local testing
@@ -1461,12 +1438,14 @@ if __name__ == "__main__":
             # include_dashboard=False
         )
 
-    # Deploy the application.
-    # `serve.run` blocks until the script is killed.
-    # The host and port here are for the Ray Serve HTTP proxy.
-    # SERVE_PORT lets Docker/deployments override the bind port (defaults to 8000 for local runs).
+    # Configure the HTTP proxy bind address. Ray Serve 2.x sets host/port via
+    # serve.start(http_options=...); serve.run no longer accepts them.
+    # SERVE_PORT lets Docker/deployments override the port (defaults to 8000 for local runs).
     serve_port = int(os.environ.get("SERVE_PORT", "8000"))
-    serve.run(cosyvoice_app, host="0.0.0.0", port=serve_port, name="cosyvoice_serve_app")
+    serve.start(http_options={"host": "0.0.0.0", "port": serve_port})
+
+    # blocking=True keeps `python api.py` alive (serve.run now defaults to non-blocking).
+    serve.run(cosyvoice_app, name="cosyvoice_serve_app", blocking=True)
 
     # To stop the service when running this way, you'd typically Ctrl+C.
     # Add cleanup if needed, though Ray's shutdown should handle actor cleanup.
@@ -1507,5 +1486,5 @@ if __name__ == "__main__":
 # - Instruct:      POST http://localhost:8000/instruct_tts
 #     JSON: {"text": "...", "instruction": "speak cheerfully", "voice_type": "qwen"}
 #
-# Dependencies live in requirements.txt; system packages (FFmpeg, Sox) and the runtime
-# are set up by the Dockerfile (see README for details).
+# Dependencies are managed with uv (pyproject.toml + uv.lock); system packages
+# (FFmpeg, Sox, libsndfile) and the runtime are set up by the Dockerfile (see README).
