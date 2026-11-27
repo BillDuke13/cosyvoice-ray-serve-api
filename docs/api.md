@@ -135,8 +135,11 @@ Errors return JSON `{"detail": "<message>"}`:
 
 | Status | Cause |
 | --- | --- |
-| `400` | Invalid JSON, missing/wrongly typed fields, invalid `speed`, or unavailable voice prompt |
-| `500` | Model inference or FFmpeg/soundfile encoding failure |
-| `503` | Model not loaded (`/health` or streaming request before readiness) |
+| `400` | Invalid JSON/multipart form, missing/blank fields, invalid `speed`/`stream`, unavailable voice prompt, or invalid/corrupt reference audio |
+| `413` | Uploaded `reference_audio` exceeds `MAX_REFERENCE_AUDIO_BYTES` (default 25 MiB) |
+| `500` | Internal synthesis or audio-encoding failure |
+| `503` | Model not loaded (`/health` or synthesis requests before readiness) |
 
-CORS permits all origins, methods, and headers with `allow_credentials=False` (configured in `cosyvoice_api/service.py`). Restrict `allow_origins` before exposing the service on a public network.
+Uploaded reference audio clips are capped at 30 seconds during 16 kHz mono WAV normalization to match CosyVoice3's frontend limit.
+
+CORS defaults to `allow_origins=["*"]` with `allow_credentials=False`. Set `CORS_ALLOW_ORIGINS` (comma-separated origins) to restrict browser access in production.

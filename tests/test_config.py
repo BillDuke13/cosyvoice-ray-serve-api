@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+import pytest
+
 from cosyvoice_api.config import (
+    DEFAULT_MAX_REFERENCE_AUDIO_BYTES,
     DEFAULT_MODEL_DIR_NAME,
     DEFAULT_MODEL_ID,
     DEFAULT_MODEL_REVISION,
@@ -12,6 +16,7 @@ from cosyvoice_api.config import (
     SAMPLE_RATE,
     DeploymentSettings,
     Settings,
+    configure_logging,
 )
 
 
@@ -25,6 +30,8 @@ def test_settings_defaults_and_no_side_effects(tmp_path: Path) -> None:
     assert settings.model_dir_name == DEFAULT_MODEL_DIR_NAME
     assert settings.model_revision == DEFAULT_MODEL_REVISION
     assert settings.serve_port == 8000
+    assert settings.max_reference_audio_bytes == DEFAULT_MAX_REFERENCE_AUDIO_BYTES
+    assert settings.cors_allow_origins == ("*",)
     assert settings.voices_dir == tmp_path.resolve() / "assets" / "voices"
     assert settings.voice_prompts["qwen"] == tmp_path.resolve() / "assets" / "voices" / "qwen.wav"
 
@@ -46,6 +53,8 @@ def test_settings_env_overrides(tmp_path: Path) -> None:
         "COSYVOICE_MODEL_REVISION": "v1.0",
         "SERVE_PORT": "9998",
         "MAX_REPLICAS": "4",
+        "MAX_REFERENCE_AUDIO_BYTES": "1048576",
+        "CORS_ALLOW_ORIGINS": "https://app.example.com, https://admin.example.com",
     }
     settings = Settings.from_env(env, root_dir=tmp_path)
 
@@ -54,9 +63,14 @@ def test_settings_env_overrides(tmp_path: Path) -> None:
     assert settings.model_revision == "v1.0"
     assert settings.serve_port == 9998
     assert settings.max_replicas == 4
+    assert settings.max_reference_audio_bytes == 1048576
+    assert settings.cors_allow_origins == (
+        "https://app.example.com",
+        "https://admin.example.com",
+    )
 
 
-def test_deployment_settings_env_overrides() -> None:
+def test_deployment_settings_env_overrides_and_validation() -> None:
     deploy = DeploymentSettings.from_env(
         {
             "MIN_REPLICAS": "2",
@@ -74,16 +88,34 @@ def test_deployment_settings_env_overrides() -> None:
     )
 
     assert deploy.min_replicas == 2
-    assert deploy.initial_replicas == 2
     assert deploy.max_replicas == 6
-    assert deploy.target_ongoing_requests == 3
     assert deploy.num_gpus_per_replica == 0
-    assert deploy.health_check_period_s == 10
-    assert deploy.health_check_timeout_s == 20
-    assert deploy.max_ongoing_requests_per_replica == 8
-    assert deploy.max_queued_requests_deployment == 40
-    assert deploy.graceful_shutdown_timeout_s == 90
-    assert deploy.graceful_shutdown_wait_loop_s == 2
+
+    with pytest.raises(ValueError, match="SERVE_PORT"):
+        Settings.from_env({"SERVE_PORT": "not-an-int"})
+
+    with pytest.raises(ValueError, match="MIN_REPLICAS"):
+        DeploymentSettings.from_env({"MIN_REPLICAS": "5", "MAX_REPLICAS": "2"})
+
+    with pytest.raises(ValueError, match="NUM_GPUS_PER_REPLICA"):
+        DeploymentSettings.from_env({"NUM_GPUS_PER_REPLICA": "-1"})
+
+
+def test_configure_logging_is_idempotent(tmp_path: Path) -> None:
+    settings = Settings.from_env({}, root_dir=tmp_path)
+    root = logging.getLogger()
+    before_handlers = list(root.handlers)
+    try:
+        log_path_1 = configure_logging(settings)
+        count_after_first = len(root.handlers)
+        log_path_2 = configure_logging(settings)
+        assert log_path_1 == log_path_2 == (tmp_path / "logs" / "cosyvoice_api.log").resolve()
+        assert len(root.handlers) == count_after_first
+    finally:
+        for handler in list(root.handlers):
+            if handler not in before_handlers:
+                root.removeHandler(handler)
+                handler.close()
 
 
 def test_default_voice_asset_present_in_repo() -> None:

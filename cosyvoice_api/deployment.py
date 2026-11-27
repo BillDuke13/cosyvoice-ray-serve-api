@@ -1,6 +1,9 @@
-"""Ray Serve deployment declaration and FastAPI ingress binding."""
+"""Ray Serve deployment declaration and FastAPI ingress binding.
 
-from __future__ import annotations
+Note: Do not add `from __future__ import annotations` here. Ray Serve's `@serve.ingress`
+cloudpickles `http_app` at decoration time, stripping unused globals from route closures;
+runtime type annotations are required so FastAPI resolves `request: Request` cleanly.
+"""
 
 from typing import Any
 
@@ -11,7 +14,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from cosyvoice_api.config import DeploymentSettings, Settings
-from cosyvoice_api.service import CosyVoiceHandlers, configure_cors
+from cosyvoice_api.http_utils import configure_cors
+from cosyvoice_api.service import CosyVoiceHandlers
 
 
 def _build_ray_actor_options(deploy: DeploymentSettings) -> dict[str, Any]:
@@ -20,11 +24,11 @@ def _build_ray_actor_options(deploy: DeploymentSettings) -> dict[str, Any]:
     return {}
 
 
-http_app = FastAPI(title="CosyVoice Ray Serve API")
-configure_cors(http_app)
-
 _startup_settings = Settings.from_env()
 _deploy_settings = DeploymentSettings.from_env()
+
+http_app = FastAPI(title="CosyVoice Ray Serve API")
+configure_cors(http_app, _startup_settings.cors_allow_origins)
 
 
 @serve.deployment(

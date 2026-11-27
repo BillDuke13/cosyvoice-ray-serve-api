@@ -41,8 +41,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONHASHSEED=random \
     TZ=UTC \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+    LC_ALL=C.UTF-8 \
+    HOME=/home/cosyvoice \
+    XDG_CACHE_HOME=/app/tmp/cache \
+    MPLCONFIGDIR=/app/tmp/matplotlib
 
+# CUDA 13.x minor-version compatibility accepts host drivers >= 580 (13.2 GA >= 595.45.04).
 ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     NVIDIA_REQUIRE_CUDA="cuda>=13.0"
@@ -85,7 +89,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-RUN groupadd -r cosyvoice && useradd -r -g cosyvoice -u 1000 cosyvoice
+# Ubuntu 24.04 ships with a built-in `ubuntu` user at UID 1000; allocate a fresh system UID
+# with a writable home directory for ModelScope/HuggingFace/matplotlib caches.
+RUN groupadd -r cosyvoice && useradd -r -g cosyvoice -m -d /home/cosyvoice cosyvoice
 
 WORKDIR /app
 
@@ -95,8 +101,8 @@ COPY --from=builder /app/.venv /app/.venv
 
 COPY --chown=cosyvoice:cosyvoice . /app
 
-RUN mkdir -p /app/tmp /app/logs /app/pretrained_models /tmp/cuda_cache \
-    && chown -R cosyvoice:cosyvoice /app/tmp /app/logs /app/pretrained_models /tmp/cuda_cache \
+RUN mkdir -p /app/tmp/cache /app/tmp/matplotlib /app/logs /app/pretrained_models /tmp/cuda_cache /home/cosyvoice \
+    && chown -R cosyvoice:cosyvoice /app/tmp /app/logs /app/pretrained_models /tmp/cuda_cache /home/cosyvoice \
     && chmod +x /app/scripts/entrypoint.sh
 
 EXPOSE 9998 8265 6379 10001
