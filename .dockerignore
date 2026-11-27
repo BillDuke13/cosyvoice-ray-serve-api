@@ -1,9 +1,10 @@
-# Version control
+# Version control and tooling metadata
 .git
 .gitignore
 .gitattributes
+.gitnexus/
 
-# Python
+# Python environments and caches
 __pycache__
 *.pyc
 *.pyo
@@ -12,6 +13,7 @@ __pycache__
 *.py[cod]
 *$py.class
 .pytest_cache
+.ruff_cache
 .coverage
 .env
 .venv
@@ -19,7 +21,7 @@ env/
 venv/
 ENV/
 
-# Development
+# Editor files
 .vscode/
 .idea/
 *.swp
@@ -27,13 +29,13 @@ ENV/
 *.swn
 *.bak
 
-# Logs and databases
+# Runtime logs and temporary data
 *.log
 *.sqlite
 logs/
 tmp/
 
-# OS generated files
+# OS metadata
 .DS_Store
 .DS_Store?
 ._*
@@ -42,11 +44,15 @@ tmp/
 ehthumbs.db
 Thumbs.db
 
-# Project specific
+# Docs and tests are excluded from the runtime image
+docs/
+tests/
+
+# Model weights are mounted or downloaded at startup
 pretrained_models/
-# Keep built-in voice prompts: /tts and /instruct_tts load asset/*.wav at runtime.
-# Stray root-level media is still excluded by the patterns below.
+
+# Keep built-in voice prompts while ignoring stray root media files
 *.wav
 *.mp3
 *.flac
-!asset/*.wav
+!assets/voices/*.wav

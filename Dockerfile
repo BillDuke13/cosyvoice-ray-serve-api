@@ -1,36 +1,30 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build for the CosyVoice3 Ray Serve API.
-#
-# Dependencies are managed by uv (pyproject.toml + uv.lock). The CUDA 13.0 base
-# supports Blackwell / RTX 50-series (sm_120) via the torch cu130 wheels pinned in
-# pyproject's [tool.uv.index]. There is no conda/pynini layer: CosyVoice3 uses the
-# wetext text-normalization path, which does not require pynini.
+# Multi-stage image for the CosyVoice3 Ray Serve API.
+# Uses CUDA 13.2 (Blackwell / RTX 50-series sm_120) and uv-managed Python 3.11.
 
-ARG CUDA_IMAGE=nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
+ARG CUDA_IMAGE=nvidia/cuda:13.2.1-cudnn-runtime-ubuntu24.04
 
-# ---------- builder: install the locked dependency tree into /app/.venv ----------
+# ---------- builder: install locked dependencies into /app/.venv ----------
 FROM ${CUDA_IMAGE} AS builder
 
-# Pinned uv binary (copied from the official distroless image).
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.10 /uv /uvx /bin/
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON=3.10 \
+    UV_PYTHON=3.11 \
     UV_PYTHON_INSTALL_DIR=/python \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
-# Toolchain for any sdist lacking a cp310 wheel; discarded with this stage.
+# Build toolchain for sdists without prebuilt wheels (e.g. matcha-tts); omitted from runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates \
+    build-essential \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install ONLY dependencies (cached unless uv.lock / pyproject.toml change).
-# pyproject sets package=false, so the project itself is not installed; api.py and
-# the vendored cosyvoice/ package are imported as local files at runtime.
+# Sync dependencies only so this layer stays cached across application edits.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
@@ -49,12 +43,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# NVIDIA Container settings
 ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     NVIDIA_REQUIRE_CUDA="cuda>=13.0"
 
-# CUDA / PyTorch performance settings (arch list includes 12.0 = Blackwell sm_120).
+# Target architectures from Turing (7.5) through Blackwell (12.0).
 ENV CUDA_DEVICE_ORDER=PCI_BUS_ID \
     CUDA_LAUNCH_BLOCKING=0 \
     CUDA_CACHE_PATH=/tmp/cuda_cache \
@@ -62,7 +55,6 @@ ENV CUDA_DEVICE_ORDER=PCI_BUS_ID \
     TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1 \
     CUBLAS_WORKSPACE_CONFIG=:16:8
 
-# Ray configuration for Docker
 ENV RAY_DISABLE_DOCKER_CPU_WARNING=1 \
     RAY_DEDUP_LOGS=0 \
     RAY_memory_monitor_refresh_ms=5000 \
@@ -70,7 +62,7 @@ ENV RAY_DISABLE_DOCKER_CPU_WARNING=1 \
     RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1 \
     RAY_enable_gpu_detection=1
 
-# Application configuration (names must match the env vars read in api.py)
+# Application defaults (names match cosyvoice_api/config.py).
 ENV SERVE_PORT=9998 \
     COSYVOICE_MODEL_ID=FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
     COSYVOICE_MODEL_DIR_NAME=Fun-CosyVoice3-0.5B \
@@ -79,10 +71,8 @@ ENV SERVE_PORT=9998 \
     MAX_QUEUED_REQUESTS_DEPLOYMENT=10 \
     MAX_REPLICAS=4
 
-# Make the uv-managed virtual environment the default Python.
 ENV PATH="/app/.venv/bin:$PATH"
 
-# System runtime libraries: audio stack (ffmpeg/sox/libsndfile), health utils, gosu.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
@@ -95,25 +85,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Non-root service user
 RUN groupadd -r cosyvoice && useradd -r -g cosyvoice -u 1000 cosyvoice
 
 WORKDIR /app
 
-# uv-managed interpreter + the synced virtual environment from the builder stage.
-# The venv references the interpreter under /python, so both must be copied.
+# Both /python and /app/.venv are required because the venv symlinks the managed interpreter.
 COPY --from=builder /python /python
 COPY --from=builder /app/.venv /app/.venv
 
-# Application code: api.py, vendored cosyvoice/, asset/*.wav prompts, start.sh.
 COPY --chown=cosyvoice:cosyvoice . /app
 
-# Writable runtime directories (model cache, temp audio, logs).
 RUN mkdir -p /app/tmp /app/logs /app/pretrained_models /tmp/cuda_cache \
     && chown -R cosyvoice:cosyvoice /app/tmp /app/logs /app/pretrained_models /tmp/cuda_cache \
-    && chmod +x /app/start.sh
+    && chmod +x /app/scripts/entrypoint.sh
 
-# Expose serve API, Ray dashboard, Ray GCS, Ray client.
 EXPOSE 9998 8265 6379 10001
 
 HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
@@ -121,4 +106,4 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
 
 USER cosyvoice
 
-ENTRYPOINT ["/app/start.sh"]
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]

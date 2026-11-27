@@ -170,12 +170,12 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Models directory
+# Runtime artifacts
 pretrained_models/
-
-# Asset directory
 logs/
 tmp/
+.ruff_cache/
+.gitnexus/
 *.DS_Store
 
 # Local private notes
