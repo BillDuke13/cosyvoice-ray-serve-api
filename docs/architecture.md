@@ -6,13 +6,14 @@ First-party code lives under `cosyvoice_api/` with explicit boundaries:
 
 | Module | Responsibility |
 | --- | --- |
-| `cosyvoice_api/config.py` | Immutable `Settings` and `DeploymentSettings` loaded from environment variables, fixed sample-rate constants, and `assets/voices/` paths. No filesystem side effects on import. |
+| `cosyvoice_api/config.py` | Immutable `Settings` and `DeploymentSettings` loaded from environment variables, fixed sample-rate constants, idempotent logging setup, and `assets/voices/` paths. No filesystem side effects on import. |
 | `cosyvoice_api/prompts.py` | Pure CosyVoice3 `<|endofprompt|>` prompt/instruction formatters and speech-rate validation. |
-| `cosyvoice_api/audio.py` | Tensor validation and peak normalization, FFmpeg reference resampling (16 kHz mono WAV), soundfile + FFmpeg LAME MP3 encoding via `asyncio.to_thread`, and `VoicePromptCache` for static built-in voices. |
-| `cosyvoice_api/engine.py` | CUDA setup, Ray GPU assignment (`ray.get_gpu_ids()`), ModelScope download, lazy `AutoModel` import/initialization with CPU fallback, chunk iteration, and resource release. |
-| `cosyvoice_api/service.py` | `CosyVoiceHandlers` (FastAPI route logic, request-scoped upload cleanup, response streaming, `reconfigure()`) and `create_asgi_app()` for standalone ASGI/unit testing. |
+| `cosyvoice_api/audio.py` | Tensor validation and peak normalization, hardened FFmpeg reference resampling (16 kHz mono WAV, capped at 30 s), soundfile + FFmpeg LAME MP3 encoding via `asyncio.to_thread`, and lock-protected `VoicePromptCache` for static built-in voices. |
+| `cosyvoice_api/engine.py` | CUDA setup, Ray GPU ordinal mapping, `FileLock`-guarded ModelScope download, lazy `AutoModel` import/initialization with `fp16=False` retry, chunk iteration, and resource release. |
+| `cosyvoice_api/http_utils.py` | Request JSON/multipart parsing, bounded upload streaming (`MAX_REFERENCE_AUDIO_BYTES`), CORS setup, Ray runtime ID lookup, and `TempPathGuard` cleanup finalizers. |
+| `cosyvoice_api/service.py` | `CosyVoiceHandlers` (FastAPI route logic, per-replica inference serialization offloaded from the event loop, response streaming, `reconfigure()`) and `create_asgi_app()` for standalone ASGI/unit testing. |
 | `cosyvoice_api/deployment.py` | FastAPI `http_app`, `@serve.deployment(name="CosyVoiceAPI")`, `@serve.ingress(http_app)`, and the bound `app` object resolved by `serve run cosyvoice_api:app`. |
-| `cosyvoice_api/__main__.py` | Local CLI runner (`python -m cosyvoice_api`) that configures stdout/file logging, starts Ray if needed, and runs Ray Serve in blocking mode. |
+| `cosyvoice_api/__main__.py` | Local CLI runner (`python -m cosyvoice_api`) that applies CUDA env defaults before importing PyTorch, configures logging, handles `SIGTERM`/`SIGINT`, and runs Ray Serve. |
 
 The vendored `cosyvoice/` directory is upstream CosyVoice (`074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`) and is treated as read-only. Because `cosyvoice/llm/llm.py` uses `Qwen2Encoder.forward_one_step` with a static mask slice that regresses under `transformers >= 4.53 / 5.x` (upstream issues `#1886`, `#1953`), `pyproject.toml` pins `transformers==4.51.3` rather than patching vendored code.
 
@@ -63,6 +64,7 @@ flowchart LR
 ## Replica Lifecycle
 
 1. `@serve.deployment` configures autoscaling, concurrency caps, health checks, graceful shutdown, and `num_gpus` from environment variables at deployment definition time.
-2. Each replica constructs `CosyVoiceEngine`, selects its assigned GPU via `ray.get_gpu_ids()` (falling back to CPU), downloads missing weights from ModelScope, and loads `AutoModel` with `fp16=True` on CUDA (falling back to CPU `fp16=False` on GPU init failure).
-3. `reconfigure(config)` applies runtime `user_config` updates from `serve.update_config()`, validating `default_voice` against registered `voice_prompts` before switching.
-4. An `atexit` hook releases the model, clears CUDA cache, and removes cached voice prompt WAVs on exit.
+2. Each replica constructs `CosyVoiceEngine`, maps its Ray-assigned GPU (`ray.get_gpu_ids()`) to the actor's local PyTorch CUDA ordinal (or `cpu` when no GPU is assigned), downloads missing weights from ModelScope under an inter-process `FileLock`, and loads `AutoModel` with `fp16=True` on CUDA (retrying `fp16=False` on CUDA init failure).
+3. Model synthesis and streaming chunk generation run on worker threads serialized per replica (`asyncio.Lock`) so the event loop remains responsive to `/health` probes while protecting vendored `CosyVoice3Model`'s non-reentrant CUDA stream context.
+4. `reconfigure(config)` applies runtime `user_config` updates from `serve.update_config()`, validating `default_voice` against registered `voice_prompts` before switching.
+5. `__del__` / `cleanup()` releases the model, clears CUDA cache, and deletes cached/retired built-in voice prompt WAVs on replica shutdown.

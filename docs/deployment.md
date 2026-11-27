@@ -79,7 +79,9 @@ Built-in voice prompts in `assets/voices/*.wav` are copied into the image (prese
 | `HEALTH_CHECK_TIMEOUT_S` | `30` | `30` | Ray Serve health check timeout (seconds) |
 | `GRACEFUL_SHUTDOWN_TIMEOUT_S` | `60` | `60` | Drain timeout on replica shutdown (seconds) |
 | `GRACEFUL_SHUTDOWN_WAIT_LOOP_S` | `5` | `5` | Drain poll interval (seconds) |
-| `CUDA_VISIBLE_DEVICES` | unset | unset | Restrict visible NVIDIA GPUs |
+| `MAX_REFERENCE_AUDIO_BYTES` | `26214400` (25 MiB) | same | Max uploaded reference audio size (bytes; returns `413` if exceeded) |
+| `CORS_ALLOW_ORIGINS` | `*` | `*` | Comma-separated allowed CORS origins |
+| `CUDA_VISIBLE_DEVICES` | unset | unset | Restrict visible NVIDIA GPUs (`""` forces CPU) |
 
 ## Adding Built-In Voices
 
@@ -95,4 +97,4 @@ Place a `.wav` file under `assets/voices/` and register its `voice_type` key in 
 
 - **Model download fails**: confirm outbound network access to ModelScope and write permissions on `pretrained_models/`.
 - **FFmpeg or libsndfile errors**: confirm `ffmpeg`, `sox`, and `libsndfile` are installed and reachable on `PATH`.
-- **CUDA initialization errors**: check host NVIDIA driver (`>= 580`), NVIDIA Container Toolkit setup, and `CUDA_VISIBLE_DEVICES`. Replicas automatically fall back to CPU if GPU initialization fails.
+- **CUDA initialization errors**: check host NVIDIA driver (`>= 580`), NVIDIA Container Toolkit setup, and `CUDA_VISIBLE_DEVICES`. To force CPU execution explicitly, set `NUM_GPUS_PER_REPLICA=0` and `CUDA_VISIBLE_DEVICES=""`.

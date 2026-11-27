@@ -91,9 +91,10 @@ cosyvoice-ray-serve-api/
 │   ├── audio.py            # Tensor validation/normalization, FFmpeg MP3 encoding, voice cache
 │   ├── config.py           # Environment-driven Settings and DeploymentSettings
 │   ├── deployment.py       # @serve.deployment and FastAPI @serve.ingress binding
-│   ├── engine.py           # GPU selection, ModelScope download, AutoModel inference wrapper
+│   ├── engine.py           # GPU ordinal mapping, locked ModelScope download, AutoModel wrapper
+│   ├── http_utils.py       # Request parsing, upload streaming, CORS, and temp cleanup guards
 │   ├── prompts.py          # CosyVoice3 `<|endofprompt|>` formatting and speed validation
-│   └── service.py          # HTTP route handlers and request lifecycle
+│   └── service.py          # HTTP route handlers and per-replica inference lifecycle
 ├── assets/voices/          # Built-in voice prompt WAVs (default: qwen.wav)
 ├── scripts/entrypoint.sh   # Container entrypoint (Ray head + `python -m cosyvoice_api`)
 ├── docs/                   # API, architecture, and deployment documentation

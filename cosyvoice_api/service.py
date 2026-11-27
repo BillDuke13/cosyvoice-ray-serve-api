@@ -1,48 +1,47 @@
 """HTTP route handlers and per-replica resource lifecycle for CosyVoice3."""
 
-from __future__ import annotations
-
-import atexit
+import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
-import ray
 import torch
 from fastapi import FastAPI
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
-from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from cosyvoice_api.audio import (
+    AudioProcessingError,
     VoicePromptCache,
     encode_tensor_to_mp3_bytes_async,
     normalize_reference_audio_async,
     safe_unlink,
 )
-from cosyvoice_api.config import Settings
+from cosyvoice_api.config import Settings, configure_logging
 from cosyvoice_api.engine import CosyVoiceEngine
-from cosyvoice_api.prompts import format_instruction, format_prompt_text, parse_speed
+from cosyvoice_api.http_utils import (
+    TempPathGuard,
+    configure_cors,
+    extract_upload_fields,
+    get_ray_context_ids,
+    parse_json_stream_flag,
+    parse_speed_or_400,
+    read_form_or_400,
+    read_json_object,
+    stream_upload_to_file,
+)
+from cosyvoice_api.prompts import format_instruction, format_prompt_text
 
 logger = logging.getLogger(__name__)
 
 Mp3Encoder = Callable[[torch.Tensor, Path, int], Coroutine[Any, Any, bytes]]
 RefNormalizer = Callable[[Path, Path, int], Coroutine[Any, Any, Path]]
-
-
-def configure_cors(app: FastAPI) -> None:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
 
 class CosyVoiceHandlers:
@@ -60,6 +59,8 @@ class CosyVoiceHandlers:
     ) -> None:
         self.settings = settings or Settings.from_env()
         self.settings.ensure_runtime_dirs()
+        configure_logging(self.settings)
+
         self.user_config: dict[str, Any] = dict(user_config or {})
         self.voice_prompts: dict[str, Path] = dict(self.settings.voice_prompts)
         self.default_voice: str = str(
@@ -72,6 +73,9 @@ class CosyVoiceHandlers:
             sample_rate=self.settings.reference_audio_sample_rate,
             normalizer=ref_normalizer,
         )
+        # Vendored CosyVoice3Model holds a single non-reentrant CUDA stream context;
+        # serialize model execution per replica while keeping the event loop responsive.
+        self._inference_lock = asyncio.Lock()
 
         self._log_voice_prompts()
 
@@ -81,8 +85,6 @@ class CosyVoiceHandlers:
             self.engine = CosyVoiceEngine(self.settings)
             if auto_load:
                 self.engine.load()
-
-        atexit.register(self.cleanup)
 
     def _log_voice_prompts(self) -> None:
         for key, path in self.voice_prompts.items():
@@ -99,6 +101,16 @@ class CosyVoiceHandlers:
         finally:
             self._voice_cache.clear()
 
+    def __del__(self) -> None:
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+
+    def _require_model_loaded(self) -> None:
+        if not self.engine.is_loaded:
+            raise HTTPException(status_code=503, detail="CosyVoice model is not loaded.")
+
     def _resolve_voice(self, requested_voice: Any) -> str:
         voice = str(requested_voice) if requested_voice else self.default_voice
         if voice in self.voice_prompts:
@@ -112,37 +124,31 @@ class CosyVoiceHandlers:
             )
         return self.default_voice
 
-    @staticmethod
-    def _parse_speed_or_400(raw_speed: Any) -> float:
-        try:
-            return parse_speed(raw_speed)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-
-    @staticmethod
-    async def _read_json_object(request: Request) -> dict[str, Any]:
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Invalid JSON payload.") from exc
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="JSON payload must be an object.")
-        return payload
-
     async def _prepare_uploaded_reference(self, upload: UploadFile, prefix: str) -> Path:
         token = uuid.uuid4().hex
-        upload_name = Path(upload.filename or "reference_audio").name
-        raw_path = self.settings.tmp_dir / f"{prefix}_raw_{token}_{upload_name}"
+        raw_path = self.settings.tmp_dir / f"{prefix}_raw_{token}.audio"
         normalized_path = self.settings.tmp_dir / f"{prefix}_norm_{token}.wav"
 
         try:
-            raw_path.write_bytes(await upload.read())
+            await stream_upload_to_file(
+                upload, raw_path, max_bytes=self.settings.max_reference_audio_bytes
+            )
             await self._ref_normalizer(
                 raw_path,
                 normalized_path,
                 self.settings.reference_audio_sample_rate,
             )
             return normalized_path
+        except HTTPException:
+            safe_unlink(normalized_path)
+            raise
+        except AudioProcessingError as exc:
+            safe_unlink(normalized_path)
+            logger.warning("Invalid uploaded reference audio (%s): %s", prefix, exc)
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or unsupported reference audio file.",
+            ) from None
         except Exception:
             safe_unlink(normalized_path)
             raise
@@ -158,22 +164,77 @@ class CosyVoiceHandlers:
         cleanup_paths: list[Path] | None = None,
         **inference_kwargs: Any,
     ) -> Response:
-        paths_to_clean = list(cleanup_paths or [])
+        guard = TempPathGuard(cleanup_paths or [])
+        try:
+            self._require_model_loaded()
 
-        if stream:
-            if not self.engine.is_loaded:
-                for path in paths_to_clean:
-                    safe_unlink(path)
-                raise HTTPException(status_code=503, detail="CosyVoice model is not loaded.")
+            if stream:
+                return StreamingResponse(
+                    self._stream_mp3(
+                        method_name=method_name,
+                        text=text,
+                        guard=guard,
+                        **inference_kwargs,
+                    ),
+                    media_type="audio/mpeg",
+                )
 
-            async def mp3_stream() -> AsyncIterator[bytes]:
-                chunk_count = 0
+            async with self._inference_lock:
+                audio_tensor = await asyncio.to_thread(
+                    self.engine.synthesize,
+                    method_name,
+                    text,
+                    **inference_kwargs,
+                )
+            mp3_bytes = await self._mp3_encoder(
+                audio_tensor,
+                self.settings.tmp_dir,
+                self.settings.sample_rate,
+            )
+            guard.release()
+            return Response(mp3_bytes, media_type="audio/mpeg")
+        except BaseException:
+            guard.release()
+            raise
+
+    async def _stream_mp3(
+        self,
+        *,
+        method_name: str,
+        text: str,
+        guard: TempPathGuard,
+        **inference_kwargs: Any,
+    ) -> AsyncIterator[bytes]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        stop_event = threading.Event()
+
+        def _produce() -> None:
+            try:
+                for chunk in self.engine.iter_speech_chunks(
+                    method_name, text, stream=True, **inference_kwargs
+                ):
+                    if stop_event.is_set():
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        chunk_count = 0
+        try:
+            async with self._inference_lock:
+                producer_task = asyncio.create_task(asyncio.to_thread(_produce))
                 try:
-                    for tensor_chunk in self.engine.iter_speech_chunks(
-                        method_name, text, stream=True, **inference_kwargs
-                    ):
+                    while True:
+                        kind, item = await queue.get()
+                        if kind == "done":
+                            break
+                        if kind == "error":
+                            raise item
                         yield await self._mp3_encoder(
-                            tensor_chunk,
+                            item,
                             self.settings.tmp_dir,
                             self.settings.sample_rate,
                         )
@@ -182,23 +243,12 @@ class CosyVoiceHandlers:
                         logger.warning("Streaming %s produced no audio chunks.", method_name)
                 except Exception as exc:
                     logger.error("Streaming %s failed: %s", method_name, exc, exc_info=True)
+                    raise
                 finally:
-                    for path in paths_to_clean:
-                        safe_unlink(path)
-
-            return StreamingResponse(mp3_stream(), media_type="audio/mpeg")
-
-        try:
-            audio_tensor = self.engine.synthesize(method_name, text, **inference_kwargs)
-            mp3_bytes = await self._mp3_encoder(
-                audio_tensor,
-                self.settings.tmp_dir,
-                self.settings.sample_rate,
-            )
-            return Response(mp3_bytes, media_type="audio/mpeg")
+                    stop_event.set()
+                    await asyncio.shield(producer_task)
         finally:
-            for path in paths_to_clean:
-                safe_unlink(path)
+            guard.release()
 
     async def _run_uploaded_synthesis(
         self,
@@ -211,6 +261,7 @@ class CosyVoiceHandlers:
         error_label: str,
         **inference_kwargs: Any,
     ) -> Response:
+        self._require_model_loaded()
         normalized_ref: Path | None = None
         try:
             normalized_ref = await self._prepare_uploaded_reference(upload, prefix)
@@ -222,7 +273,6 @@ class CosyVoiceHandlers:
                 prompt_wav=str(normalized_ref),
                 **inference_kwargs,
             )
-            # Cleanup ownership transferred to _build_audio_response / mp3_stream.
             normalized_ref = None
             return response
         except HTTPException:
@@ -232,14 +282,14 @@ class CosyVoiceHandlers:
         except FileNotFoundError as exc:
             if normalized_ref is not None:
                 safe_unlink(normalized_ref)
-            raise HTTPException(
-                status_code=400, detail=f"Error with reference audio: {exc}"
-            ) from exc
+            raise HTTPException(status_code=400, detail="Reference audio file not found.") from exc
         except Exception as exc:
             if normalized_ref is not None:
                 safe_unlink(normalized_ref)
             logger.error("%s failed: %s", error_label, exc, exc_info=True)
-            raise HTTPException(status_code=500, detail=f"{error_label} error: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail=f"{error_label} failed due to an internal error."
+            ) from exc
 
     async def health_check(self, request: Request) -> JSONResponse:
         if not self.engine.is_loaded:
@@ -248,13 +298,7 @@ class CosyVoiceHandlers:
                 status_code=503,
             )
 
-        actor_id = "N/A"
-        node_id = "N/A"
-        if ray.is_initialized():
-            ctx = ray.get_runtime_context()
-            actor_id = ctx.actor_id.hex()
-            node_id = ctx.node_id.hex()
-
+        actor_id, node_id = get_ray_context_ids()
         return JSONResponse(
             {
                 "status": "healthy",
@@ -286,16 +330,17 @@ class CosyVoiceHandlers:
         )
 
     async def tts_standard(self, request: Request) -> Response:
-        payload = await self._read_json_object(request)
+        payload = await read_json_object(request)
         text = payload.get("text")
-        if not text or not isinstance(text, str):
+        if not isinstance(text, str) or not text.strip():
             raise HTTPException(
                 status_code=400, detail="Missing or invalid 'text' field in payload."
             )
 
         voice_type = self._resolve_voice(payload.get("voice_type"))
-        stream = bool(payload.get("stream", False))
-        speed = self._parse_speed_or_400(payload.get("speed", 1.0))
+        stream = parse_json_stream_flag(payload.get("stream"))
+        speed = parse_speed_or_400(payload.get("speed", 1.0))
+        self._require_model_loaded()
 
         try:
             prompt_wav = await self._voice_cache.get_or_prepare(
@@ -312,94 +357,61 @@ class CosyVoiceHandlers:
             raise
         except Exception as exc:
             logger.error("POST /tts failed: %s", exc, exc_info=True)
-            raise HTTPException(status_code=500, detail=f"TTS generation error: {exc}") from exc
+            raise HTTPException(
+                status_code=500, detail="TTS generation failed due to an internal error."
+            ) from exc
 
     async def tts_zero_shot(self, request: Request) -> Response:
-        form = await request.form()
-        text = form.get("text")
-        reference_text = form.get("reference_text")
-        reference_audio = form.get("reference_audio")
-        stream = str(form.get("stream", "false")).lower() == "true"
-        speed = self._parse_speed_or_400(form.get("speed", 1.0))
-
-        missing = [
-            name
-            for name, value in (
-                ("text", text),
-                ("reference_text", reference_text),
-                ("reference_audio", reference_audio),
+        form = await read_form_or_400(request)
+        try:
+            text, reference_text, reference_audio, stream, speed = extract_upload_fields(
+                form, require_reference_text=True
             )
-            if not value
-        ]
-        if missing:
-            raise HTTPException(
-                status_code=400, detail=f"Missing required form fields: {', '.join(missing)}"
+            assert reference_text is not None
+            return await self._run_uploaded_synthesis(
+                upload=reference_audio,
+                prefix="zero_shot",
+                method_name="inference_zero_shot",
+                text=text,
+                stream=stream,
+                error_label="Zero-shot TTS generation",
+                prompt_text=format_prompt_text(reference_text),
+                speed=speed,
             )
-        if not isinstance(text, str) or not isinstance(reference_text, str):
-            raise HTTPException(
-                status_code=400, detail="Fields 'text' and 'reference_text' must be strings."
-            )
-        if not isinstance(reference_audio, UploadFile):
-            raise HTTPException(
-                status_code=400, detail="Field 'reference_audio' must be a file upload."
-            )
-
-        return await self._run_uploaded_synthesis(
-            upload=reference_audio,
-            prefix="zero_shot",
-            method_name="inference_zero_shot",
-            text=text,
-            stream=stream,
-            error_label="Zero-shot TTS generation",
-            prompt_text=format_prompt_text(reference_text),
-            speed=speed,
-        )
+        finally:
+            await form.close()
 
     async def tts_cross_lingual(self, request: Request) -> Response:
-        form = await request.form()
-        text = form.get("text")
-        reference_audio = form.get("reference_audio")
-        stream = str(form.get("stream", "false")).lower() == "true"
-        speed = self._parse_speed_or_400(form.get("speed", 1.0))
-
-        missing = [
-            name
-            for name, value in (("text", text), ("reference_audio", reference_audio))
-            if not value
-        ]
-        if missing:
-            raise HTTPException(
-                status_code=400, detail=f"Missing required form fields: {', '.join(missing)}"
+        form = await read_form_or_400(request)
+        try:
+            text, _, reference_audio, stream, speed = extract_upload_fields(
+                form, require_reference_text=False
             )
-        if not isinstance(text, str):
-            raise HTTPException(status_code=400, detail="Field 'text' must be a string.")
-        if not isinstance(reference_audio, UploadFile):
-            raise HTTPException(
-                status_code=400, detail="Field 'reference_audio' must be a file upload."
+            return await self._run_uploaded_synthesis(
+                upload=reference_audio,
+                prefix="cross_lingual",
+                method_name="inference_cross_lingual",
+                text=format_prompt_text(text),
+                stream=stream,
+                error_label="Cross-lingual TTS generation",
+                speed=speed,
             )
-
-        return await self._run_uploaded_synthesis(
-            upload=reference_audio,
-            prefix="cross_lingual",
-            method_name="inference_cross_lingual",
-            text=format_prompt_text(text),
-            stream=stream,
-            error_label="Cross-lingual TTS generation",
-            speed=speed,
-        )
+        finally:
+            await form.close()
 
     async def tts_instruct(self, request: Request) -> Response:
-        payload = await self._read_json_object(request)
+        payload = await read_json_object(request)
         text = payload.get("text")
         instruction = payload.get("instruction")
-        if not text or not isinstance(text, str):
+        if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=400, detail="Missing or invalid 'text' field.")
-        if not instruction or not isinstance(instruction, str):
+        if not isinstance(instruction, str) or not instruction.strip():
             raise HTTPException(status_code=400, detail="Missing or invalid 'instruction' field.")
 
         voice_type = self._resolve_voice(payload.get("voice_type"))
-        stream = bool(payload.get("stream", False))
-        speed = self._parse_speed_or_400(payload.get("speed", 1.0))
+        stream = parse_json_stream_flag(payload.get("stream"))
+        speed = parse_speed_or_400(payload.get("speed", 1.0))
+        self._require_model_loaded()
 
         try:
             prompt_wav = await self._voice_cache.get_or_prepare(
@@ -407,7 +419,7 @@ class CosyVoiceHandlers:
             )
             return await self._build_audio_response(
                 method_name="inference_instruct2",
-                text=text,
+                text=text.strip(),
                 stream=stream,
                 instruct_text=format_instruction(instruction),
                 prompt_wav=str(prompt_wav),
@@ -418,12 +430,15 @@ class CosyVoiceHandlers:
         except Exception as exc:
             logger.error("POST /instruct_tts failed: %s", exc, exc_info=True)
             raise HTTPException(
-                status_code=500, detail=f"Instruct TTS generation error: {exc}"
+                status_code=500, detail="Instruct TTS generation failed due to an internal error."
             ) from exc
 
-    async def reconfigure(self, config: dict[str, Any]) -> None:
+    async def reconfigure(self, config: dict[str, Any] | None) -> None:
+        if not config:
+            return
         logger.info("Applying runtime user_config update: %s", config)
-        candidate_voice = config.get("default_voice")
+        sanitized = dict(config)
+        candidate_voice = sanitized.get("default_voice")
         if candidate_voice is not None:
             if candidate_voice in self.voice_prompts:
                 self.default_voice = candidate_voice
@@ -433,13 +448,14 @@ class CosyVoiceHandlers:
                     candidate_voice,
                     self.default_voice,
                 )
-        self.user_config.update(config)
+                sanitized["default_voice"] = self.default_voice
+        self.user_config.update(sanitized)
 
 
 def create_asgi_app(handlers: CosyVoiceHandlers) -> FastAPI:
     """Create a standalone FastAPI app bound to a handler instance (for local ASGI/tests)."""
     standalone = FastAPI(title="CosyVoice Ray Serve API")
-    configure_cors(standalone)
+    configure_cors(standalone, handlers.settings.cors_allow_origins)
     standalone.add_api_route("/health", handlers.health_check, methods=["GET"])
     standalone.add_api_route(
         "/v1/model/cosyvoice/healthcheck", handlers.health_check, methods=["GET"]
